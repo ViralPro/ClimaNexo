@@ -1,0 +1,43 @@
+# Entornos virtuales de Python
+.venv/
+venv/
+env/
+ENV/
+
+# Cachés de Python y pruebas
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Variables de entorno y credenciales privadas
+.env
+.env.*
+!.env.example
+
+# Bases de datos SQLite locales y archivos WAL/SHM en tiempo de ejecución
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+data/*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs y archivos temporales del sistema operativo
+*.log
+logs/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

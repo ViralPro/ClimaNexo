@@ -1,0 +1,10 @@
+{
+  "name": "Weather Dashboard Pro",
+  "short_name": "WeatherPro",
+  "description": "Plataforma meteorológica multiproveedor independiente en español con verificación real de precisión.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#38bdf8",
+  "theme_color": "#0b57d0",
+  "lang": "es"
+}
