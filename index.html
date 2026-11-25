@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#38bdf8" />
+  <meta name="description" content="Weather Dashboard Pro — Plataforma meteorológica multiproveedor en español con mapas de radar, pronóstico extendido, historial y verificación real de precisión." />
+  <title>Weather Dashboard Pro — Plataforma Meteorológica</title>
+  <link rel="manifest" href="./static/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./static/vendor/leaflet.css" />
+  <link rel="stylesheet" href="./static/css/styles.css" />
+</head>
+<body data-theme="clear" data-view="landing">
+  <!-- Fondo dinámico reactivo al clima (réplica visual Google AI Studio Weather Dashboard) -->
+  <div class="sky-backdrop" aria-hidden="true"></div>
+  <div class="sky-veil" aria-hidden="true"></div>
+
+  <!-- Navegación superior de secciones (oculta en pantalla principal; accesible en teléfonos con desplazamiento horizontal y centrada en tablet/PC) -->
+  <header class="top-header" role="banner">
+    <div class="header-inner">
+      <nav id="main-nav" class="main-nav hidden" aria-label="Secciones meteorológicas">
+        <button type="button" class="nav-pill active" data-tab="overview" aria-current="page">
+          <i data-lucide="sun" class="nav-icon" aria-hidden="true"></i>
+          <span>Resumen</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="hourly">
+          <i data-lucide="clock" class="nav-icon" aria-hidden="true"></i>
+          <span>Horas</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="extended">
+          <i data-lucide="calendar-range" class="nav-icon" aria-hidden="true"></i>
+          <span>Extendido</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="map">
+          <i data-lucide="map" class="nav-icon" aria-hidden="true"></i>
+          <span>Mapa</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="providers">
+          <i data-lucide="layers" class="nav-icon" aria-hidden="true"></i>
+          <span>Fuentes</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="accuracy">
+          <i data-lucide="target" class="nav-icon" aria-hidden="true"></i>
+          <span>Precisión</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="history">
+          <i data-lucide="history" class="nav-icon" aria-hidden="true"></i>
+          <span>Historial</span>
+        </button>
+        <button type="button" class="nav-pill" data-tab="search">
+          <i data-lucide="search" class="nav-icon" aria-hidden="true"></i>
+          <span>Buscar</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Toast de notificaciones -->
+  <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
+
+  <!-- CONTENIDO PRINCIPAL -->
+  <main class="app-main" id="app-main">
+    <!-- ==================== 1. VISTA DE INICIO LIMPIA ==================== -->
+    <section id="view-landing" class="landing-section" aria-label="Búsqueda principal">
+      <div class="landing-hero">
+        <h1 class="landing-title">
+          Consultá el clima y construyo tu panel meteorológico al instante
+        </h1>
+
+        <form id="landing-form" class="search-pill-dark" autocomplete="off">
+          <div class="search-input-wrap">
+            <input
+              id="landing-input"
+              type="text"
+              class="search-input-dark"
+              placeholder="Escribí una ciudad o consulta meteorológica..."
+              aria-label="Buscar ciudad o consulta meteorológica"
+            />
+            <div id="landing-autocomplete" class="autocomplete-menu hidden" role="listbox"></div>
+          </div>
+          <button type="submit" id="landing-submit-btn" class="pill-submit-btn" title="Consultar clima" aria-label="Consultar clima">
+            <i data-lucide="arrow-right"></i>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ==================== 2. VISTA DE PANEL ACTIVO ==================== -->
+    <section id="view-dashboard" class="dashboard-section hidden" aria-label="Panel meteorológico">
+      <!-- Indicador de carga suave -->
+      <div id="loading-overlay" class="loading-bar hidden" role="status" aria-live="polite">
+        <span class="spinner"></span>
+        <span id="loading-text">Obteniendo datos meteorológicos en tiempo real...</span>
+      </div>
+
+      <!-- -------- TAB 1: RESUMEN (RÉPLICA DIRECTA WEATHER DASHBOARD) -------- -->
+      <div id="tab-overview" class="tab-panel narrow-column">
+        <!-- Resumen narrativo determinístico centrado -->
+        <p id="overview-narrative" class="narrative-text"></p>
+
+        <!-- Barra Enfoque de Fechas (réplica exacta Date Focus) -->
+        <div class="glass-pill date-focus-pill">
+          <div class="date-focus-left">
+            <span class="circle-icon-badge" aria-hidden="true"><i data-lucide="calendar-days"></i></span>
+            <span class="date-focus-caption">Enfoque de fechas</span>
+          </div>
+          <div class="date-focus-right">
+            <div class="range-quick-btns" role="group" aria-label="Rango rápido">
+              <button type="button" class="mini-pill active" data-range="7d">7d</button>
+              <button type="button" class="mini-pill" data-range="14d">14d</button>
+              <button type="button" class="mini-pill" data-range="last_month">Mes pasado</button>
+            </div>
+            <span id="date-focus-value" class="date-focus-value tabular">—</span>
+          </div>
+        </div>
+
+        <!-- Banner de discrepancia entre fuentes (solo visible cuando existe diferencia significativa) -->
+        <div id="overview-discrepancy-banner" class="discrepancy-banner hidden"></div>
+
+        <!-- Contenedor modo CIUDAD ÚNICA (Pronóstico o Historial) -->
+        <div id="single-city-stack" class="stack-gap">
+          <!-- Tarjeta 50/50 WeatherCard + Mapa Interactivo (réplica fiel) -->
+          <div class="weather-hero-grid">
+            <article class="glass-card weather-main-card">
+              <div class="weather-card-top">
+                <div>
+                  <h2 id="hero-city-name" class="hero-city-name">—</h2>
+                  <p id="hero-city-sub" class="hero-city-sub">—</p>
+                </div>
+                <div class="hero-card-actions">
+                  <button type="button" id="btn-favorite-toggle" class="mini-icon-btn" title="Guardar en favoritos" aria-label="Guardar en favoritos">
+                    <i data-lucide="star"></i>
+                  </button>
+                </div>
+              </div>
+
+              <div class="hero-temp-row">
+                <div class="hero-temp-readout tabular">
+                  <span id="hero-temp-value" class="hero-temp-num">--</span>
+                  <span id="hero-temp-unit" class="hero-temp-unit">°C</span>
+                </div>
+                <div class="hero-condition-wrap">
+                  <span id="hero-condition-icon" class="hero-cond-icon"><i data-lucide="sun"></i></span>
+                  <span id="hero-condition-text" class="hero-cond-text">—</span>
+                  <span id="hero-feels-text" class="hero-feels-text tabular">Sensación --</span>
+                </div>
+              </div>
+
+              <!-- Submétricas en mosaico 2×2 / 2×3 -->
+              <div id="hero-submetrics" class="submetrics-grid"></div>
+            </article>
+
+            <!-- Mapa interactivo integrado en el bloque derecho 50% -->
+            <div class="weather-map-card">
+              <div id="mini-map" class="mini-map-canvas" aria-label="Mapa de ubicación y radar"></div>
+              <button type="button" id="btn-expand-map" class="map-expand-btn">
+                <i data-lucide="maximize-2"></i> Ampliar mapa radar
+              </button>
+            </div>
+          </div>
+
+          <!-- Tira rápida de pronóstico por horas -->
+          <article id="overview-hourly-card" class="glass-card chart-card compact-card">
+            <div class="card-header-row">
+              <div>
+                <h3 class="card-title">Próximas 24 horas</h3>
+                <p class="card-subtitle">Temperatura, sensación térmica y probabilidad de lluvia</p>
+              </div>
+              <button type="button" class="link-pill" data-jump-tab="hourly">Ver 72 h</button>
+            </div>
+            <div id="overview-hourly-strip" class="hourly-strip" role="list"></div>
+          </article>
+
+          <!-- Gráfico 1: Temperatura y Precipitación (estilo barras azul cobalto #0B57D0) -->
+          <article class="glass-card chart-card">
+            <div class="card-header-row">
+              <div>
+                <h3 id="chart-primary-title" class="card-title">Pronóstico de Temperatura y Precipitación</h3>
+                <p id="chart-primary-sub" class="card-subtitle">Máximas diarias y precipitación acumulada</p>
+              </div>
+              <button type="button" class="link-pill" data-jump-tab="extended">Extendido</button>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-temp-precip"></canvas>
+            </div>
+          </article>
+
+          <!-- Gráfico 2: Tendencia de Viento y Presión -->
+          <article class="glass-card chart-card">
+            <div class="card-header-row">
+              <div>
+                <h3 id="chart-secondary-title" class="card-title">Tendencia de Viento</h3>
+                <p id="chart-secondary-sub" class="card-subtitle">Velocidad máxima diaria estimada</p>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-wind-trend"></canvas>
+            </div>
+          </article>
+
+          <!-- Tarjeta resumen de Procedencia y Consenso Multiproveedor -->
+          <article id="consensus-mini-card" class="glass-card compact-card">
+            <div class="card-header-row">
+              <div>
+                <h3 class="card-title">Procedencia y Respaldo de los Datos</h3>
+                <p id="consensus-mini-sub" class="card-subtitle">Evaluando fuentes meteorológicas independientes...</p>
+              </div>
+              <div class="inline-btn-group">
+                <button type="button" class="link-pill" data-jump-tab="providers">Ver fuentes</button>
+                <button type="button" class="link-pill" data-jump-tab="accuracy">Ver precisión real</button>
+              </div>
+            </div>
+            <div id="consensus-mini-metrics" class="mini-kpi-row"></div>
+            <p id="provenance-detail-line" class="provenance-line"></p>
+            <p class="attribution-line dashboard-attr">Actualizado <span id="last-updated-label">—</span></p>
+          </article>
+        </div>
+
+        <!-- Contenedor modo COMPARACIÓN MULTI-CIUDAD (réplica Boston/NY/Seattle) -->
+        <div id="multi-city-stack" class="stack-gap hidden">
+          <div id="mc-city-cards" class="mc-summary-grid"></div>
+
+          <article class="glass-card chart-card">
+            <div class="card-header-row">
+              <div>
+                <h3 class="card-title">Comparativa de Temperatura Máxima</h3>
+                <p id="mc-temp-sub" class="card-subtitle">Evolución térmica diaria comparada</p>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-mc-temp"></canvas>
+            </div>
+          </article>
+
+          <article class="glass-card chart-card">
+            <div class="card-header-row">
+              <div>
+                <h3 class="card-title">Precipitación Diaria Total</h3>
+                <p class="card-subtitle">Análisis comparativo de lluvias por ciudad (mm)</p>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-mc-precip"></canvas>
+            </div>
+          </article>
+
+          <article class="glass-card chart-card">
+            <div class="card-header-row">
+              <div>
+                <h3 class="card-title">Viento Máximo Comparado</h3>
+                <p class="card-subtitle">Velocidad pico diaria por ciudad</p>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-mc-wind"></canvas>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- -------- TAB 2: PRONÓSTICO POR HORAS -------- -->
+      <div id="tab-hourly" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Pronóstico por Horas — <span class="js-active-city">—</span></h2>
+            <p class="card-subtitle">Detalle horario de temperatura, sensación térmica, probabilidad de lluvia, viento, humedad y presión</p>
+          </div>
+          <div class="segmented-group" id="hourly-window-group">
+            <button type="button" class="seg-btn active" data-hours="24">24 h</button>
+            <button type="button" class="seg-btn" data-hours="48">48 h</button>
+            <button type="button" class="seg-btn" data-hours="72">72 h</button>
+          </div>
+        </div>
+
+        <article class="glass-card chart-card">
+          <h3 class="card-title">Curva Térmica y Probabilidad de Lluvia</h3>
+          <div class="chart-canvas-wrap">
+            <canvas id="chart-hourly-detail"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card table-card">
+          <div class="table-head-row">
+            <h3 class="card-title">Tabla Horaria Completa</h3>
+            <span class="mobile-scroll-hint">Deslizá ↔</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Condición</th>
+                  <th class="num">Temp.</th>
+                  <th class="num">Sensación</th>
+                  <th class="num">Prob. lluvia</th>
+                  <th class="num">Lluvia</th>
+                  <th class="num">Viento</th>
+                  <th class="num">Humedad</th>
+                  <th class="num">Presión</th>
+                  <th class="num">UV</th>
+                </tr>
+              </thead>
+              <tbody id="hourly-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+      <!-- -------- TAB 3: EXTENDIDO Y COMPARADOR MULTI-CIUDAD -------- -->
+      <div id="tab-extended" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Pronóstico Diario y Extendido — <span class="js-active-city">—</span></h2>
+            <p class="card-subtitle">Amplitud térmica, precipitación, ráfagas, índice UV y horas solares hasta 16 días</p>
+          </div>
+          <div class="segmented-group" id="extended-days-group">
+            <button type="button" class="seg-btn active" data-days="7">7 días</button>
+            <button type="button" class="seg-btn" data-days="14">14 días</button>
+            <button type="button" class="seg-btn" data-days="16">16 días</button>
+          </div>
+        </div>
+
+        <article class="glass-card compact-card">
+          <div id="extended-days-list" class="daily-rows-list"></div>
+        </article>
+
+        <!-- Constructor interactivo de Comparación Multi-Ciudad -->
+        <article class="glass-card compact-card">
+          <h3 class="card-title">Comparador Multi-Ciudad</h3>
+          <p class="card-subtitle">Compará entre 2 y 5 ciudades en modo pronóstico o historial real</p>
+          <form id="city-compare-form" class="inline-form">
+            <input type="text" id="compare-cities-input" class="glass-input" value="Madrid, Buenos Aires, Bogotá" placeholder="Ej: Madrid, Buenos Aires, Santiago" required />
+            <select id="compare-mode-select" class="glass-select">
+              <option value="7">Pronóstico 7 días</option>
+              <option value="14">Pronóstico 14 días</option>
+              <option value="hist_30">Últimos 30 días (Histórico)</option>
+            </select>
+            <button type="submit" class="primary-btn">Comparar ciudades</button>
+          </form>
+        </article>
+      </div>
+
+      <!-- -------- TAB 4: MAPAS METEOROLÓGICOS Y RADAR EN VIVO -------- -->
+      <div id="tab-map" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Mapa Meteorológico y Radar en Vivo</h2>
+            <p class="card-subtitle">Radar de precipitación RainViewer animado · Hacé clic en cualquier punto del mapa para consultar el clima en esas coordenadas</p>
+          </div>
+          <div class="segmented-group" id="map-layer-group">
+            <button type="button" class="seg-btn active" data-layer="radar">Radar Lluvia</button>
+            <button type="button" class="seg-btn" data-layer="satellite">Satélite IR</button>
+            <button type="button" class="seg-btn" data-layer="none">Sin capa</button>
+          </div>
+        </div>
+
+        <div class="glass-card map-full-card">
+          <div id="full-map" class="full-map-canvas" aria-label="Mapa meteorológico interactivo"></div>
+          <div class="radar-controls-bar">
+            <button type="button" id="radar-play-btn" class="mini-icon-btn" title="Reproducir / Pausar radar" aria-label="Reproducir radar">
+              <i data-lucide="play"></i>
+            </button>
+            <input type="range" id="radar-frame-slider" min="0" max="0" value="0" class="radar-slider" aria-label="Línea temporal del radar" />
+            <span id="radar-frame-time" class="radar-time-label tabular">—</span>
+            <label class="opacity-control">
+              Opacidad
+              <input type="range" id="radar-opacity-slider" min="20" max="95" value="65" />
+            </label>
+          </div>
+        </div>
+
+        <div id="map-click-inspector" class="glass-card compact-card hidden"></div>
+      </div>
+
+      <!-- -------- TAB 5: COMPARACIÓN MULTIPROVEEDOR (SOLO LECTURA TRANSPARENTE) -------- -->
+      <div id="tab-providers" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Fuentes Meteorológicas y Comparativa — <span class="js-active-city">—</span></h2>
+            <p class="card-subtitle">Comparación automática entre fuentes independientes, ponderación por frescura y precisión verificada en servidor</p>
+          </div>
+          <span id="providers-freshness-badge" class="status-badge status-ok">Actualizado automáticamente</span>
+        </div>
+
+        <div id="providers-discrepancy-box" class="discrepancy-banner hidden"></div>
+
+        <div id="providers-consensus-grid" class="kpi-grid-4"></div>
+
+        <article class="glass-card table-card">
+          <div class="table-head-row">
+            <div>
+              <h3 class="card-title">Procedencia y Comparativa por Fuente</h3>
+              <p id="providers-provenance-note" class="card-subtitle">Datos verificados automáticamente desde la base meteorológica local</p>
+            </div>
+            <span class="mobile-scroll-hint">Deslizá ↔</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Fuente meteorológica</th>
+                  <th>Rol</th>
+                  <th class="num">Temp.</th>
+                  <th class="num">Dif.</th>
+                  <th class="num">Sensación</th>
+                  <th class="num">Humedad</th>
+                  <th class="num">Presión</th>
+                  <th class="num">Viento</th>
+                  <th class="num">Lluvia</th>
+                  <th class="num">Precisión real</th>
+                  <th class="num">Peso</th>
+                  <th>Condición</th>
+                </tr>
+              </thead>
+              <tbody id="providers-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <div class="two-col-charts">
+          <article class="glass-card chart-card">
+            <h3 class="card-title">Pronóstico 24 h por Proveedor</h3>
+            <p class="card-subtitle">Curvas térmicas superpuestas en vivo</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-providers-24h"></canvas>
+            </div>
+          </article>
+          <article class="glass-card chart-card">
+            <h3 class="card-title">Máximas 7 días por Proveedor</h3>
+            <p class="card-subtitle">Dispersión de modelos en horizonte semanal</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-providers-7d"></canvas>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- -------- TAB 6: PRECISIÓN REAL Y AUDITORÍA DE PRONÓSTICOS -------- -->
+      <div id="tab-accuracy" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Verificación y Precisión Real de Proveedores</h2>
+            <p class="card-subtitle">Contrastación de pronósticos registrados contra observaciones reales almacenadas en SQLite (sin porcentajes inventados)</p>
+          </div>
+          <div class="inline-btn-group">
+            <select id="accuracy-scope-select" class="glass-select" aria-label="Ámbito de precisión">
+              <option value="location">Ubicación actual</option>
+              <option value="global">Global (todas las ciudades)</option>
+            </select>
+            <select id="accuracy-source-select" class="glass-select" aria-label="Origen de muestras">
+              <option value="">Todas las fuentes</option>
+              <option value="historical_run">Verificación Histórica Real</option>
+              <option value="live_forecast">Pronósticos en Vivo (BD local)</option>
+            </select>
+            <button type="button" id="btn-run-backtest" class="primary-btn">
+              <i data-lucide="flask-conical"></i> Verificar últimos 7 días
+            </button>
+          </div>
+        </div>
+
+        <div id="accuracy-kpi-grid" class="kpi-grid-4"></div>
+
+        <div class="glass-card compact-card methodology-box">
+          <i data-lucide="shield-check"></i>
+          <p id="accuracy-methodology-text"></p>
+        </div>
+
+        <article class="glass-card chart-card">
+          <h3 class="card-title">Ranking de Precisión Compuesta Verificada (%)</h3>
+          <p class="card-subtitle">Solo se grafican proveedores con registros reales maduros (N &gt; 0)</p>
+          <div class="chart-canvas-wrap">
+            <canvas id="chart-accuracy-ranking"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card table-card">
+          <div class="table-head-row">
+            <h3 class="card-title">Estadísticas Reales por Proveedor</h3>
+            <span class="mobile-scroll-hint">Deslizá ↔</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th class="num">Muestras (N)</th>
+                  <th class="num">Precisión</th>
+                  <th class="num">MAE Temp.</th>
+                  <th class="num">RMSE Temp.</th>
+                  <th class="num">Sesgo</th>
+                  <th class="num">MAE Viento</th>
+                  <th class="num">Acierto Lluvia</th>
+                  <th>Estado de verificación</th>
+                </tr>
+              </thead>
+              <tbody id="accuracy-ranking-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="glass-card table-card">
+          <div class="table-head-row">
+            <div>
+              <h3 class="card-title">Auditoría de Registros Contrastados (SQLite)</h3>
+              <p class="card-subtitle">Últimos pares verificados: pronóstico emitido con anticipación frente a la observación real</p>
+            </div>
+            <span class="mobile-scroll-hint">Deslizá ↔</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Hora objetivo (UTC)</th>
+                  <th>Ciudad</th>
+                  <th>Proveedor</th>
+                  <th class="num">Horizonte</th>
+                  <th class="num">Pronosticado</th>
+                  <th class="num">Observado</th>
+                  <th class="num">Error ΔT</th>
+                  <th class="num">Lluvia P/R</th>
+                  <th class="num">Score</th>
+                  <th>Origen</th>
+                </tr>
+              </thead>
+              <tbody id="accuracy-audit-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+      <!-- -------- TAB 7: HISTORIAL METEOROLÓGICO -------- -->
+      <div id="tab-history" class="tab-panel wide-column hidden">
+        <div class="section-head-card glass-card compact-card">
+          <div>
+            <h2 class="section-heading">Historial Meteorológico — <span class="js-active-city">—</span></h2>
+            <p class="card-subtitle">Archivo climático real (Open-Meteo ERA5 / Reanálisis) y registros locales acumulados</p>
+          </div>
+          <div class="inline-btn-group">
+            <button type="button" class="mini-pill" data-hist-preset="7">7 días</button>
+            <button type="button" class="mini-pill active" data-hist-preset="30">30 días</button>
+            <button type="button" class="mini-pill" data-hist-preset="90">90 días</button>
+            <button type="button" id="btn-export-csv" class="primary-btn">
+              <i data-lucide="download"></i> Exportar CSV
+            </button>
+          </div>
+        </div>
+
+        <form id="history-range-form" class="glass-card compact-card inline-form">
+          <label class="field-group">
+            <span>Desde</span>
+            <input type="date" id="history-start-input" class="glass-input" required />
+          </label>
+          <label class="field-group">
+            <span>Hasta</span>
+            <input type="date" id="history-end-input" class="glass-input" required />
+          </label>
+          <button type="submit" class="primary-btn">Consultar archivo</button>
+        </form>
+
+        <p id="history-narrative" class="narrative-text compact-narrative"></p>
+
+        <div id="history-kpi-grid" class="kpi-grid-4"></div>
+
+        <div class="two-col-charts">
+          <article class="glass-card chart-card">
+            <h3 class="card-title">Evolución Térmica Histórica</h3>
+            <p class="card-subtitle">Máximas, medias y mínimas diarias reales</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-history-temp"></canvas>
+            </div>
+          </article>
+          <article class="glass-card chart-card">
+            <h3 class="card-title">Precipitaciones Históricas Diarias</h3>
+            <p class="card-subtitle">Acumulado diario registrado (mm)</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="chart-history-rain"></canvas>
+            </div>
+          </article>
+        </div>
+
+        <article class="glass-card table-card">
+          <div class="table-head-row">
+            <h3 class="card-title">Registro Diario Histórico</h3>
+            <span class="mobile-scroll-hint">Deslizá ↔</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Condición</th>
+                  <th class="num">Máx.</th>
+                  <th class="num">Mín.</th>
+                  <th class="num">Media</th>
+                  <th class="num">Lluvia</th>
+                  <th class="num">Viento máx.</th>
+                  <th class="num">Ráfagas</th>
+                </tr>
+              </thead>
+              <tbody id="history-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+
+      <!-- -------- TAB 8: BUSCAR UBICACIONES -------- -->
+      <div id="tab-search" class="tab-panel narrow-column hidden">
+        <article class="glass-card search-panel-card">
+          <div class="search-panel-header">
+            <span class="circle-icon-badge search-panel-badge" aria-hidden="true">
+              <i data-lucide="search"></i>
+            </span>
+            <div>
+              <h2 class="section-heading">Buscar ubicación</h2>
+              <p class="card-subtitle">
+                Consultá el clima de cualquier ciudad, localidad, provincia, país o ubicación específica.
+              </p>
+            </div>
+          </div>
+
+          <form id="search-tab-form" class="search-pill-dark search-tab-pill" autocomplete="off">
+            <i data-lucide="search" class="search-tab-icon" aria-hidden="true"></i>
+            <div class="search-input-wrap">
+              <input
+                id="search-tab-input"
+                type="text"
+                class="search-input-dark"
+                placeholder="Ej: Córdoba, Mendoza, Madrid, Patagonia, Tokio..."
+                aria-label="Buscar ciudad, localidad, provincia, país o ubicación"
+              />
+            </div>
+            <button
+              type="button"
+              id="search-tab-clear"
+              class="pill-inner-btn hidden"
+              title="Limpiar búsqueda"
+              aria-label="Limpiar búsqueda"
+            >
+              <i data-lucide="x"></i>
+            </button>
+            <button
+              type="submit"
+              id="search-tab-submit"
+              class="pill-submit-btn"
+              title="Consultar clima"
+              aria-label="Consultar clima"
+            >
+              <i data-lucide="arrow-right"></i>
+            </button>
+          </form>
+
+          <p class="search-scope-hint">
+            Escribí una ciudad, localidad, provincia, país o comparativa (ej: <em>Comparar Madrid, Lima y Quito</em>).
+          </p>
+
+          <div id="search-tab-status" class="search-status-line hidden" role="status" aria-live="polite"></div>
+          <div id="search-tab-results" class="search-results-list hidden" role="listbox" aria-label="Ubicaciones encontradas"></div>
+        </article>
+
+        <article id="search-active-card" class="glass-card compact-card search-active-card hidden">
+          <div class="card-header-row">
+            <div class="search-active-info">
+              <span class="circle-icon-badge" aria-hidden="true"><i data-lucide="map-pin"></i></span>
+              <div>
+                <h3 id="search-active-name" class="card-title">—</h3>
+                <p id="search-active-meta" class="card-subtitle">—</p>
+              </div>
+            </div>
+            <button type="button" class="link-pill" data-jump-tab="overview">Ver resumen</button>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <!-- Librerías vendoreadas localmente (sin dependencias frágiles externas) -->
+  <script src="./static/vendor/chart.umd.min.js"></script>
+  <script src="./static/vendor/leaflet.js"></script>
+  <script src="./static/vendor/lucide.min.js"></script>
+
+  <!-- Módulos frontend de Weather Dashboard Pro -->
+  <script src="./static/js/api.js"></script>
+  <script src="./static/js/charts.js"></script>
+  <script src="./static/js/map.js"></script>
+  <script src="./static/js/app.js"></script>
+</body>
+</html>

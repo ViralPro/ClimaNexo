@@ -1422,13 +1422,15 @@
     });
     document.getElementById("btn-export-csv").addEventListener("click", () => {
       if (!state.location) return;
-      const url = API.historyExportUrl({
-        lat: state.location.latitude,
-        lon: state.location.longitude,
-        start_date: document.getElementById("history-start-input").value,
-        end_date: document.getElementById("history-end-input").value,
-      });
-      window.open(url, "_blank");
+      API.exportHistoryCsv(
+        {
+          lat: state.location.latitude,
+          lon: state.location.longitude,
+          start_date: document.getElementById("history-start-input").value,
+          end_date: document.getElementById("history-end-input").value,
+        },
+        state.historyData
+      );
     });
 
     attachAutocomplete("landing-input", "landing-autocomplete");
