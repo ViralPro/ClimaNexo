@@ -314,9 +314,12 @@ window.WeatherAPI = (() => {
 
     return dedupe(ck, async () => {
       try {
-        const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=${count}&language=es&format=json`;
+        const parts = clean.split(",").map((s) => s.trim()).filter(Boolean);
+        const searchTerm = parts.length > 1 ? parts[0] : clean;
+        const filterTerms = parts.slice(1).map((p) => normKey(p));
+        const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchTerm)}&count=${Math.max(count, filterTerms.length ? 12 : count)}&language=es&format=json`;
         const d = await fetchJsonWithTimeout(url, 8000);
-        const results = (d.results || []).map((item) =>
+        let results = (d.results || []).map((item) =>
           decorateLocation({
             id: item.id,
             name: item.name,
@@ -329,6 +332,14 @@ window.WeatherAPI = (() => {
             location_source: "search",
           })
         );
+        if (filterTerms.length && results.length) {
+          const matched = results.filter((loc) => {
+            const hay = normKey(`${loc.name} ${loc.admin1} ${loc.country}`);
+            return filterTerms.every((ft) => hay.includes(ft));
+          });
+          if (matched.length) results = matched;
+        }
+        results = results.slice(0, count);
         if (results.length) {
           const out = { results };
           cacheSet(ck, out, TTL.GEOCODE);
@@ -1532,10 +1543,11 @@ window.WeatherAPI = (() => {
     const q = String(body.query || "").trim();
     const low = normKey(q);
 
-    // 1. Comparación multi-ciudad
-    if (low.startsWith("comparar") || (q.includes(",") && q.split(",").length >= 2 && !/\d+\.\d+\s*,\s*-?\d+\.\d+/.test(q))) {
+    // 1. Comparación multi-ciudad (solo si se pide explícitamente "comparar" o "vs" para no confundir "Ciudad, Provincia, País")
+    if (low.startsWith("comparar") || /\bvs\.?\b/i.test(q)) {
       const cleaned = q
         .replace(/^(comparar\s+(el\s+clima\s+en|clima\s+de|ciudades)?)/i, "")
+        .replace(/\s+vs\.?\s+/gi, ", ")
         .replace(/\s+y\s+/gi, ", ")
         .trim();
       const cities = cleaned

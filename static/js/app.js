@@ -1361,7 +1361,7 @@
         list.classList.add("hidden");
         if (status) status.classList.add("hidden");
         const sTabInp = document.getElementById("search-tab-input");
-        if (sTabInp) sTabInp.value = chosen.display_label || chosen.name;
+        if (sTabInp) sTabInp.value = chosen.name;
         loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
       });
     });
@@ -1377,11 +1377,10 @@
       return;
     }
 
-    // Si es una consulta compleja (comparativa, historial o coordenadas directas), resolverla directamente
+    // Si es una consulta compleja (comparativa explícita, historial o coordenadas directas), resolverla directamente
     if (
-      q.includes(",") ||
       /^-?\d{1,2}(\.\d+)?\s*[,;\s]\s*-?\d{1,3}(\.\d+)?$/.test(q) ||
-      /\b(comparar|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q)
+      /\b(comparar|vs\.?|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q)
     ) {
       if (status) {
         status.textContent = "Procesando consulta meteorológica...";
