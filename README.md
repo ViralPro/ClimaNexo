@@ -1,6 +1,8 @@
 # ClimaNexo — Plataforma Meteorológica Multiproveedor
 
-**ClimaNexo** (*Weather Dashboard Pro*) es una plataforma meteorológica independiente en español con diseño **Mobile-First**, motor inteligente de consenso multiproveedor en tiempo real, verificación histórica real de precisión, radar meteorológico interactivo y base de datos **SQLite WAL** de alta velocidad con recopilación continua en Python.
+**Aplicación Web en Vivo (GitHub Pages)**: https://viralpro.github.io/ClimaNexo/
+
+**ClimaNexo** es una plataforma meteorológica profesional en español con diseño **Mobile-First**, indicador real de **confianza del pronóstico**, motor multiproveedor internacional en paralelo (**Open-Meteo Best Match, ECMWF IFS, DWD ICON, NOAA GFS, ECCC GEM Canadá, Météo-France ARPEGE, MET Norway y wttr.in**), caché multinivel inteligente sin descargas redundantes, verificación histórica empírica de precisión y radar meteorológico animado en vivo.
 
 Toda la lógica del sistema utiliza procesamiento matemático, estadístico y meteorológico convencional en Python, **sin depender de modelos de inteligencia artificial ni LLMs**.
 

@@ -142,6 +142,7 @@ class WeatherBundleResponse(BaseModel):
     consensus_preview: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
     discrepancy: dict[str, Any] = Field(default_factory=dict)
+    confidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class ComparisonProviderRow(BaseModel):
@@ -182,6 +183,7 @@ class ProviderComparisonResponse(BaseModel):
     consensus: dict[str, Any]
     discrepancy: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    confidence: dict[str, Any] = Field(default_factory=dict)
     providers: list[ComparisonProviderRow]
     hourly_chart: dict[str, Any]
     daily_chart: dict[str, Any]

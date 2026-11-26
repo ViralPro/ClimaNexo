@@ -145,6 +145,7 @@ class CollectorService:
             consensus_preview=eval_res.consensus,
             provenance=eval_res.provenance,
             discrepancy=eval_res.discrepancy,
+            confidence=eval_res.confidence,
         )
 
         today_daily = eval_res.selected_daily[0] if eval_res.selected_daily else None
@@ -505,6 +506,7 @@ class CollectorService:
             consensus=eval_res.consensus,
             discrepancy=eval_res.discrepancy,
             provenance=eval_res.provenance,
+            confidence=eval_res.confidence,
             providers=rows,
             hourly_chart=hourly_chart,
             daily_chart=daily_chart,

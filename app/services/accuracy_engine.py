@@ -16,7 +16,7 @@ from app.models.schemas import (
     AccuracyProviderStat,
     LocationModel,
 )
-from app.providers.base import normalize_hour_utc, safe_float
+from app.providers.base import get_ssl_context, normalize_hour_utc, safe_float
 
 # Modelos disponibles en Open-Meteo Previous Runs API vinculados a nuestros provider_id reales
 PREVIOUS_RUN_MODEL_MAP: dict[str, str] = {
@@ -24,6 +24,8 @@ PREVIOUS_RUN_MODEL_MAP: dict[str, str] = {
     "ecmwf_ifs": "ecmwf_ifs025",
     "noaa_gfs": "gfs_seamless",
     "dwd_icon": "icon_seamless",
+    "eccc_gem": "gem_seamless",
+    "meteofrance": "meteofrance_seamless",
 }
 
 METHODOLOGY_NOTE = (
@@ -160,13 +162,27 @@ class AccuracyEngine:
             "timezone": "UTC",
         }
 
+        last_err: Exception | None = None
+        prev_data: dict[str, Any] = {}
         async with httpx.AsyncClient(
-            timeout=18.0,
+            timeout=22.0,
             headers={"User-Agent": settings.user_agent},
+            verify=get_ssl_context(),
         ) as client:
-            resp = await client.get(self.PREVIOUS_RUNS_URL, params=params)
-            resp.raise_for_status()
-            prev_data = resp.json()
+            for attempt in range(2):
+                try:
+                    resp = await client.get(self.PREVIOUS_RUNS_URL, params=params)
+                    resp.raise_for_status()
+                    prev_data = resp.json()
+                    last_err = None
+                    break
+                except Exception as exc:
+                    last_err = exc
+                    if attempt == 0:
+                        import asyncio
+                        await asyncio.sleep(1.5)
+            if last_err is not None:
+                raise last_err
 
             # También intentamos traer observaciones reales del archivo ERA5/reanalysis para días >= 2 días atrás
             now_utc = datetime.now(timezone.utc)

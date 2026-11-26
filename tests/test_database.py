@@ -16,7 +16,7 @@ def test_sqlite_wal_and_integrity(tmp_path):
     assert info["ok"] is True
     assert str(info["journal_mode"]).lower() == "wal"
     assert info["foreign_keys"] is True
-    assert info["table_counts"]["provider_settings"] == 8
+    assert info["table_counts"]["provider_settings"] == 10
 
 
 def test_location_upsert_favorites_and_cascade(tmp_path):

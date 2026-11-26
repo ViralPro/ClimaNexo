@@ -276,6 +276,22 @@ class DwdIconProvider(OpenMeteoProvider):
     extended_variables = False
 
 
+class EcccGemProvider(OpenMeteoProvider):
+    provider_id = "eccc_gem"
+    display_name = "ECCC GEM (Canadá)"
+    endpoint_url = "https://api.open-meteo.com/v1/forecast"
+    model_param = "gem_seamless"
+    extended_variables = False
+
+
+class MeteoFranceProvider(OpenMeteoProvider):
+    provider_id = "meteofrance"
+    display_name = "Météo-France ARPEGE"
+    endpoint_url = "https://api.open-meteo.com/v1/forecast"
+    model_param = "meteofrance_seamless"
+    extended_variables = False
+
+
 def _idx(arr: Any, idx: int) -> Any:
     if not isinstance(arr, list) or idx >= len(arr):
         return None

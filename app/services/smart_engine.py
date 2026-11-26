@@ -42,6 +42,7 @@ class SmartEvaluationResult:
     consensus: dict[str, Any]
     discrepancy: dict[str, Any]
     provenance: dict[str, Any]
+    confidence: dict[str, Any]
     content_hash: str
     rejected_count: int = 0
 
@@ -386,6 +387,15 @@ class SmartMeteorologicalEngine:
             "primary_provider_name": primary_snap.display_name,
         }
 
+        confidence = compute_forecast_confidence(
+            valid_sources=valid_sources,
+            total_expected_sources=max(len(snapshots), len(valid_sources)),
+            temp_spread_c=spread_temp,
+            temp_std_c=std_temp,
+            wind_spread_kmh=wind_spread,
+            precip_disagreement=precip_disagreement,
+        )
+
         # Huella criptográfica para detectar cambios meteorológicos reales y evitar escrituras redundantes
         fp_obj = {
             "t": selected_current.temperature_c,
@@ -408,9 +418,108 @@ class SmartMeteorologicalEngine:
             consensus=consensus,
             discrepancy=discrepancy,
             provenance=provenance,
+            confidence=confidence,
             content_hash=content_hash,
             rejected_count=rejected_count,
         )
+
+
+def compute_forecast_confidence(
+    valid_sources: list[EvaluatedSource],
+    total_expected_sources: int,
+    temp_spread_c: float,
+    temp_std_c: float,
+    wind_spread_kmh: float,
+    precip_disagreement: bool,
+) -> dict[str, Any]:
+    """
+    Calcula el porcentaje REAL de confianza del pronóstico combinando criterios objetivos:
+    - Coincidencia térmica entre modelos (desviación estándar y dispersión real).
+    - Consenso de precipitación y viento.
+    - Antigüedad / frescura temporal de las observaciones.
+    - Disponibilidad de fuentes válidas independientes.
+    - Precisión histórica verificada real (solo si hay muestras reales suficientes; nunca inventada).
+    """
+    n_valid = len(valid_sources)
+    if n_valid < 2:
+        return {
+            "available": False,
+            "score_pct": None,
+            "level": "No disponible",
+            "reason": "Se requieren al menos 2 fuentes meteorológicas válidas para calcular la confianza estadística.",
+            "summary": "Confianza no disponible por insuficiencia de fuentes independientes.",
+            "factors": {},
+        }
+
+    # 1. Coincidencia térmica entre modelos (0–100)
+    thermal_agreement = max(25.0, min(100.0, 100.0 - (temp_spread_c * 8.5 + temp_std_c * 9.5)))
+
+    # 2. Consenso de precipitación y viento (0–100)
+    rain_penalty = 24.0 if precip_disagreement else 0.0
+    wind_penalty = min(22.0, max(0.0, (wind_spread_kmh - 8.0) * 1.1))
+    precip_wind_consensus = max(35.0, min(100.0, 100.0 - rain_penalty - wind_penalty))
+
+    # 3. Frescura real de los datos (0–100)
+    freshness_pct = sum(e.freshness_factor for e in valid_sources) / n_valid * 100.0
+
+    # 4. Disponibilidad de información (2 fuentes -> 65%, 4 -> 88%, 6+ -> 100%)
+    target_sources = max(4, min(7, total_expected_sources))
+    availability_pct = min(100.0, (n_valid / target_sources) * 100.0)
+
+    # 5. Precisión histórica real (únicamente si hay >= 12 muestras verificadas)
+    verified = [e for e in valid_sources if e.historical_accuracy_pct is not None and e.historical_samples >= 6]
+    total_samples = sum(e.historical_samples for e in verified)
+    has_historical = total_samples >= 12 and len(verified) >= 1
+
+    if has_historical:
+        hist_pct = sum(float(e.historical_accuracy_pct or 0.0) * e.historical_samples for e in verified) / total_samples
+        raw_score = (
+            thermal_agreement * 0.36
+            + precip_wind_consensus * 0.18
+            + freshness_pct * 0.16
+            + availability_pct * 0.14
+            + hist_pct * 0.16
+        )
+    else:
+        hist_pct = None
+        raw_score = (
+            thermal_agreement * 0.44
+            + precip_wind_consensus * 0.22
+            + freshness_pct * 0.18
+            + availability_pct * 0.16
+        )
+
+    score = int(round(max(20.0, min(98.0, raw_score))))
+    if score >= 85:
+        level = "Alta"
+    elif score >= 70:
+        level = "Buena"
+    elif score >= 55:
+        level = "Moderada"
+    else:
+        level = "Baja"
+
+    summary = (
+        f"Confianza {level.lower()} ({score} %) basada en {n_valid} fuentes independientes "
+        f"(dispersión térmica ±{temp_std_c:.1f} °C, rango {temp_spread_c:.1f} °C"
+        + (f", respaldo de {total_samples} verificaciones reales)." if has_historical else ").")
+    )
+
+    return {
+        "available": True,
+        "score_pct": score,
+        "level": level,
+        "summary": summary,
+        "sources_used": n_valid,
+        "verified_samples": total_samples,
+        "factors": {
+            "model_agreement_pct": round(thermal_agreement, 1),
+            "precip_consensus_pct": round(precip_wind_consensus, 1),
+            "freshness_pct": round(freshness_pct, 1),
+            "availability_pct": round(availability_pct, 1),
+            "historical_backing_pct": round(hist_pct, 1) if hist_pct is not None else None,
+        },
+    }
 
 
 def _weighted_avg(pairs: list[tuple[Optional[float], float]], digits: int = 1) -> Optional[float]:

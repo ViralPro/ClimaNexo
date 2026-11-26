@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -40,12 +42,31 @@ def create_app(db_path: Path | str | None = None, enable_scheduler: bool = True)
     app.state.facade = facade
     app.state.scheduler = scheduler
 
+    rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+    RATE_LIMIT_MAX = 180
+    RATE_LIMIT_WINDOW = 60.0
+
     @app.middleware("http")
-    async def security_headers_middleware(request: Request, call_next):
+    async def security_and_rate_limit_middleware(request: Request, call_next):
+        if request.url.path.startswith("/api/v1/"):
+            client_host = request.client.host if request.client else "unknown"
+            if client_host not in ("testclient", "127.0.0.1", "::1"):
+                now_ts = time.monotonic()
+                bucket = rate_buckets[client_host]
+                while bucket and (now_ts - bucket[0]) > RATE_LIMIT_WINDOW:
+                    bucket.popleft()
+                if len(bucket) >= RATE_LIMIT_MAX:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"detail": "Demasiadas solicitudes consecutivas. Reintentá en unos segundos."},
+                    )
+                bucket.append(now_ts)
+
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
         return response
 
     @app.exception_handler(Exception)

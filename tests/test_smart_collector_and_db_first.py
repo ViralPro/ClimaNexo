@@ -104,6 +104,18 @@ def test_smart_engine_weights_accuracy_freshness_and_flags_discrepancy(tmp_path)
     assert res.discrepancy["precip_disagreement"] is True
     assert "DWD ICON" in res.discrepancy["summary"]
 
+    # 5. Porcentaje real de confianza calculado con criterios objetivos (sin valores arbitrarios)
+    assert res.confidence["available"] is True
+    assert 20 <= res.confidence["score_pct"] <= 98
+    assert res.confidence["factors"]["model_agreement_pct"] is not None
+    assert res.confidence["factors"]["historical_backing_pct"] is not None
+
+    # 6. Con una sola fuente válida, la confianza debe declararse explícitamente como no disponible
+    res_single = engine.evaluate(loc, [snaps[0]])
+    assert res_single.confidence["available"] is False
+    assert res_single.confidence["score_pct"] is None
+    assert res_single.confidence["level"] == "No disponible"
+
 
 def test_collector_deduplication_and_fast_db_first_with_nonblocking_stale_refresh(tmp_path):
     db_file = tmp_path / "collector_fast.db"

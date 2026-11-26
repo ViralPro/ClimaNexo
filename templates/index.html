@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#38bdf8" />
-  <meta name="description" content="Weather Dashboard Pro — Plataforma meteorológica multiproveedor en español con mapas de radar, pronóstico extendido, historial y verificación real de precisión." />
-  <title>Weather Dashboard Pro — Plataforma Meteorológica</title>
+  <meta name="description" content="ClimaNexo — Plataforma meteorológica multiproveedor en español con mapas de radar en vivo, indicador real de confianza, pronóstico extendido, historial ERA5 y verificación empírica de precisión." />
+  <title>ClimaNexo — Plataforma Meteorológica Multiproveedor</title>
   <link rel="manifest" href="./static/manifest.json" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -18,43 +18,48 @@
   <div class="sky-backdrop" aria-hidden="true"></div>
   <div class="sky-veil" aria-hidden="true"></div>
 
-  <!-- Navegación superior de secciones (oculta en pantalla principal; accesible en teléfonos con desplazamiento horizontal y centrada en tablet/PC) -->
+  <!-- Navegación superior de secciones (oculta en pantalla principal; accesible en teléfonos con desplazamiento horizontal fluido y centrada en tablet/PC) -->
   <header class="top-header" role="banner">
     <div class="header-inner">
-      <nav id="main-nav" class="main-nav hidden" aria-label="Secciones meteorológicas">
-        <button type="button" class="nav-pill active" data-tab="overview" aria-current="page">
-          <i data-lucide="sun" class="nav-icon" aria-hidden="true"></i>
-          <span>Resumen</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="hourly">
-          <i data-lucide="clock" class="nav-icon" aria-hidden="true"></i>
-          <span>Horas</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="extended">
-          <i data-lucide="calendar-range" class="nav-icon" aria-hidden="true"></i>
-          <span>Extendido</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="map">
-          <i data-lucide="map" class="nav-icon" aria-hidden="true"></i>
-          <span>Mapa</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="providers">
-          <i data-lucide="layers" class="nav-icon" aria-hidden="true"></i>
-          <span>Fuentes</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="accuracy">
-          <i data-lucide="target" class="nav-icon" aria-hidden="true"></i>
-          <span>Precisión</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="history">
-          <i data-lucide="history" class="nav-icon" aria-hidden="true"></i>
-          <span>Historial</span>
-        </button>
-        <button type="button" class="nav-pill" data-tab="search">
-          <i data-lucide="search" class="nav-icon" aria-hidden="true"></i>
-          <span>Buscar</span>
-        </button>
-      </nav>
+      <div id="main-nav-shell" class="main-nav-shell hidden">
+        <nav id="main-nav" class="main-nav" aria-label="Secciones meteorológicas">
+          <button type="button" class="nav-pill active" data-tab="overview" aria-current="page">
+            <i data-lucide="sun" class="nav-icon" aria-hidden="true"></i>
+            <span>Resumen</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="hourly">
+            <i data-lucide="clock" class="nav-icon" aria-hidden="true"></i>
+            <span>Horas</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="extended">
+            <i data-lucide="calendar-range" class="nav-icon" aria-hidden="true"></i>
+            <span>Extendido</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="map">
+            <i data-lucide="map" class="nav-icon" aria-hidden="true"></i>
+            <span>Mapa</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="providers">
+            <i data-lucide="layers" class="nav-icon" aria-hidden="true"></i>
+            <span>Fuentes</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="accuracy">
+            <i data-lucide="target" class="nav-icon" aria-hidden="true"></i>
+            <span>Precisión</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="history">
+            <i data-lucide="history" class="nav-icon" aria-hidden="true"></i>
+            <span>Historial</span>
+          </button>
+          <button type="button" class="nav-pill" data-tab="search">
+            <i data-lucide="search" class="nav-icon" aria-hidden="true"></i>
+            <span>Buscar</span>
+          </button>
+        </nav>
+        <span class="nav-scroll-cue nav-scroll-cue-right" aria-hidden="true">
+          <i data-lucide="chevron-right"></i>
+        </span>
+      </div>
     </div>
   </header>
 
@@ -67,7 +72,7 @@
     <section id="view-landing" class="landing-section" aria-label="Búsqueda principal">
       <div class="landing-hero">
         <h1 class="landing-title">
-          Consultá el clima y construyo tu panel meteorológico al instante
+          Consultá el clima y obtené tu panel meteorológico al instante
         </h1>
 
         <form id="landing-form" class="search-pill-dark" autocomplete="off">
@@ -126,9 +131,10 @@
           <div class="weather-hero-grid">
             <article class="glass-card weather-main-card">
               <div class="weather-card-top">
-                <div>
+                <div class="hero-location-block">
                   <h2 id="hero-city-name" class="hero-city-name">—</h2>
                   <p id="hero-city-sub" class="hero-city-sub">—</p>
+                  <div id="hero-location-badge" class="location-precision-row hidden"></div>
                 </div>
                 <div class="hero-card-actions">
                   <button type="button" id="btn-favorite-toggle" class="mini-icon-btn" title="Guardar en favoritos" aria-label="Guardar en favoritos">
@@ -149,7 +155,10 @@
                 </div>
               </div>
 
-              <!-- Submétricas en mosaico 2×2 / 2×3 -->
+              <!-- Indicador real de confianza meteorológica -->
+              <div id="hero-confidence-strip" class="confidence-strip hidden" role="region" aria-label="Confianza del pronóstico"></div>
+
+              <!-- Submétricas en mosaico 2×3 -->
               <div id="hero-submetrics" class="submetrics-grid"></div>
             </article>
 
@@ -201,11 +210,11 @@
             </div>
           </article>
 
-          <!-- Tarjeta resumen de Procedencia y Consenso Multiproveedor -->
+          <!-- Tarjeta resumen de Procedencia, Confianza y Consenso Multiproveedor -->
           <article id="consensus-mini-card" class="glass-card compact-card">
             <div class="card-header-row">
               <div>
-                <h3 class="card-title">Procedencia y Respaldo de los Datos</h3>
+                <h3 class="card-title">Confianza y Respaldo de los Datos</h3>
                 <p id="consensus-mini-sub" class="card-subtitle">Evaluando fuentes meteorológicas independientes...</p>
               </div>
               <div class="inline-btn-group">
@@ -214,6 +223,7 @@
               </div>
             </div>
             <div id="consensus-mini-metrics" class="mini-kpi-row"></div>
+            <div id="confidence-factors-row" class="confidence-factors-grid hidden"></div>
             <p id="provenance-detail-line" class="provenance-line"></p>
             <p class="attribution-line dashboard-attr">Actualizado <span id="last-updated-label">—</span></p>
           </article>
@@ -380,7 +390,7 @@
         <div class="section-head-card glass-card compact-card">
           <div>
             <h2 class="section-heading">Fuentes Meteorológicas y Comparativa — <span class="js-active-city">—</span></h2>
-            <p class="card-subtitle">Comparación automática entre fuentes independientes, ponderación por frescura y precisión verificada en servidor</p>
+            <p class="card-subtitle">Comparación automática entre agencias independientes, ponderación por frescura y precisión verificada</p>
           </div>
           <span id="providers-freshness-badge" class="status-badge status-ok">Actualizado automáticamente</span>
         </div>
@@ -393,7 +403,7 @@
           <div class="table-head-row">
             <div>
               <h3 class="card-title">Procedencia y Comparativa por Fuente</h3>
-              <p id="providers-provenance-note" class="card-subtitle">Datos verificados automáticamente desde la base meteorológica local</p>
+              <p id="providers-provenance-note" class="card-subtitle">Datos consolidados y validados automáticamente entre múltiples fuentes</p>
             </div>
             <span class="mobile-scroll-hint">Deslizá ↔</span>
           </div>
@@ -443,7 +453,7 @@
         <div class="section-head-card glass-card compact-card">
           <div>
             <h2 class="section-heading">Verificación y Precisión Real de Proveedores</h2>
-            <p class="card-subtitle">Contrastación de pronósticos registrados contra observaciones reales almacenadas en SQLite (sin porcentajes inventados)</p>
+            <p class="card-subtitle">Contrastación empírica de pronósticos emitidos con anticipación frente a observaciones reales (sin porcentajes inventados)</p>
           </div>
           <div class="inline-btn-group">
             <select id="accuracy-scope-select" class="glass-select" aria-label="Ámbito de precisión">
@@ -453,7 +463,7 @@
             <select id="accuracy-source-select" class="glass-select" aria-label="Origen de muestras">
               <option value="">Todas las fuentes</option>
               <option value="historical_run">Verificación Histórica Real</option>
-              <option value="live_forecast">Pronósticos en Vivo (BD local)</option>
+              <option value="live_forecast">Pronósticos en Vivo</option>
             </select>
             <button type="button" id="btn-run-backtest" class="primary-btn">
               <i data-lucide="flask-conical"></i> Verificar últimos 7 días
@@ -504,7 +514,7 @@
         <article class="glass-card table-card">
           <div class="table-head-row">
             <div>
-              <h3 class="card-title">Auditoría de Registros Contrastados (SQLite)</h3>
+              <h3 class="card-title">Auditoría de Registros Contrastados</h3>
               <p class="card-subtitle">Últimos pares verificados: pronóstico emitido con anticipación frente a la observación real</p>
             </div>
             <span class="mobile-scroll-hint">Deslizá ↔</span>
@@ -536,7 +546,7 @@
         <div class="section-head-card glass-card compact-card">
           <div>
             <h2 class="section-heading">Historial Meteorológico — <span class="js-active-city">—</span></h2>
-            <p class="card-subtitle">Archivo climático real (Open-Meteo ERA5 / Reanálisis) y registros locales acumulados</p>
+            <p class="card-subtitle">Archivo climático histórico real (Open-Meteo ERA5 / Reanálisis meteorológico)</p>
           </div>
           <div class="inline-btn-group">
             <button type="button" class="mini-pill" data-hist-preset="7">7 días</button>
@@ -652,8 +662,15 @@
             </button>
           </form>
 
+          <div class="search-actions-row">
+            <button type="button" id="btn-search-gps" class="gps-action-btn">
+              <i data-lucide="locate-fixed" aria-hidden="true"></i>
+              <span>Usar mi ubicación exacta (GPS)</span>
+            </button>
+          </div>
+
           <p class="search-scope-hint">
-            Escribí una ciudad, localidad, provincia, país o comparativa (ej: <em>Comparar Madrid, Lima y Quito</em>).
+            Escribí una ciudad, localidad, provincia, país, coordenadas o comparativa (ej: <em>Comparar Madrid, Lima y Quito</em>).
           </p>
 
           <div id="search-tab-status" class="search-status-line hidden" role="status" aria-live="polite"></div>
@@ -676,15 +693,15 @@
     </section>
   </main>
 
-  <!-- Librerías vendoreadas localmente (sin dependencias frágiles externas) -->
-  <script src="./static/vendor/chart.umd.min.js"></script>
-  <script src="./static/vendor/leaflet.js"></script>
-  <script src="./static/vendor/lucide.min.js"></script>
+  <!-- Librerías vendoreadas localmente con carga diferida no bloqueante -->
+  <script defer src="./static/vendor/chart.umd.min.js"></script>
+  <script defer src="./static/vendor/leaflet.js"></script>
+  <script defer src="./static/vendor/lucide.min.js"></script>
 
-  <!-- Módulos frontend de Weather Dashboard Pro -->
-  <script src="./static/js/api.js"></script>
-  <script src="./static/js/charts.js"></script>
-  <script src="./static/js/map.js"></script>
-  <script src="./static/js/app.js"></script>
+  <!-- Módulos frontend de ClimaNexo -->
+  <script defer src="./static/js/api.js"></script>
+  <script defer src="./static/js/charts.js"></script>
+  <script defer src="./static/js/map.js"></script>
+  <script defer src="./static/js/app.js"></script>
 </body>
 </html>

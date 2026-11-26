@@ -13,7 +13,9 @@ from app.providers.base import BaseWeatherProvider, normalize_hour_utc
 from app.providers.met_norway import MetNorwayProvider
 from app.providers.open_meteo import (
     DwdIconProvider,
+    EcccGemProvider,
     EcmwfIfsProvider,
+    MeteoFranceProvider,
     NoaaGfsProvider,
     OpenMeteoProvider,
 )
@@ -31,6 +33,8 @@ class ProviderRegistry:
             "ecmwf_ifs": EcmwfIfsProvider(),
             "noaa_gfs": NoaaGfsProvider(),
             "dwd_icon": DwdIconProvider(),
+            "eccc_gem": EcccGemProvider(),
+            "meteofrance": MeteoFranceProvider(),
             "wttr_in": WttrInProvider(),
             "weatherapi": WeatherApiProvider(),
             "openweather": OpenWeatherProvider(),

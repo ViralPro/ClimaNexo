@@ -5,11 +5,15 @@ window.WeatherMap = (() => {
   let miniMarker = null;
   let miniRadarLayer = null;
   let miniResizeObs = null;
+  let miniCenter = null;
+  let miniResizeTimer = null;
 
   let fullMap = null;
   let fullMarker = null;
   let fullOverlayLayer = null;
   let fullResizeObs = null;
+  let fullCenter = null;
+  let fullResizeTimer = null;
 
   let radarMeta = null;
   let activeLayerType = "radar"; // radar | satellite | none
@@ -49,10 +53,11 @@ window.WeatherMap = (() => {
   function initMiniMap(lat, lon, label) {
     const el = document.getElementById("mini-map");
     if (!el || typeof L === "undefined") return;
+    miniCenter = [Number(lat), Number(lon)];
 
     if (!miniMap) {
       miniMap = L.map(el, {
-        center: [lat, lon],
+        center: miniCenter,
         zoom: 8,
         zoomControl: false,
         attributionControl: true,
@@ -61,19 +66,30 @@ window.WeatherMap = (() => {
         maxZoom: 18,
         attribution: "&copy; OSM",
       }).addTo(miniMap);
-      miniMarker = L.marker([lat, lon], { icon: makePinIcon() }).addTo(miniMap);
+      miniMarker = L.marker(miniCenter, { icon: makePinIcon() }).addTo(miniMap);
       if (typeof ResizeObserver !== "undefined" && !miniResizeObs) {
         miniResizeObs = new ResizeObserver(() => {
-          if (miniMap) miniMap.invalidateSize({ animate: false });
+          clearTimeout(miniResizeTimer);
+          miniResizeTimer = setTimeout(() => {
+            if (miniMap && miniCenter) {
+              miniMap.invalidateSize({ animate: false });
+              miniMap.setView(miniCenter, miniMap.getZoom(), { animate: false });
+            }
+          }, 100);
         });
         miniResizeObs.observe(el);
       }
     } else {
-      miniMap.setView([lat, lon], 8, { animate: true });
-      miniMarker.setLatLng([lat, lon]);
+      miniMap.setView(miniCenter, 8, { animate: false });
+      miniMarker.setLatLng(miniCenter);
     }
     if (label) miniMarker.bindPopup(`<strong>${window.WeatherAPI.escapeHtml(label)}</strong>`);
-    setTimeout(() => miniMap && miniMap.invalidateSize(), 150);
+    setTimeout(() => {
+      if (miniMap && miniCenter) {
+        miniMap.invalidateSize({ animate: false });
+        miniMap.setView(miniCenter, miniMap.getZoom(), { animate: false });
+      }
+    }, 160);
     applyLatestRadarToMini();
   }
 
@@ -96,10 +112,11 @@ window.WeatherMap = (() => {
     onPointClickCb = onPointClick || onPointClickCb;
     const el = document.getElementById("full-map");
     if (!el || typeof L === "undefined") return;
+    fullCenter = [Number(lat), Number(lon)];
 
     if (!fullMap) {
       fullMap = L.map(el, {
-        center: [lat, lon],
+        center: fullCenter,
         zoom: 7,
         zoomControl: true,
       });
@@ -108,26 +125,38 @@ window.WeatherMap = (() => {
         attribution: "&copy; OpenStreetMap &middot; RainViewer",
       }).addTo(fullMap);
 
-      fullMarker = L.marker([lat, lon], { icon: makePinIcon() }).addTo(fullMap);
+      fullMarker = L.marker(fullCenter, { icon: makePinIcon() }).addTo(fullMap);
       fullMap.on("click", (ev) => {
         const clat = Number(ev.latlng.lat.toFixed(4));
         const clon = Number(ev.latlng.lng.toFixed(4));
-        fullMarker.setLatLng([clat, clon]);
+        fullCenter = [clat, clon];
+        fullMarker.setLatLng(fullCenter);
         if (onPointClickCb) onPointClickCb(clat, clon);
       });
       if (typeof ResizeObserver !== "undefined" && !fullResizeObs) {
         fullResizeObs = new ResizeObserver(() => {
-          if (fullMap) fullMap.invalidateSize({ animate: false });
+          clearTimeout(fullResizeTimer);
+          fullResizeTimer = setTimeout(() => {
+            if (fullMap && fullCenter) {
+              fullMap.invalidateSize({ animate: false });
+              fullMap.setView(fullCenter, fullMap.getZoom(), { animate: false });
+            }
+          }, 100);
         });
         fullResizeObs.observe(el);
       }
     } else {
-      fullMap.setView([lat, lon], Math.max(fullMap.getZoom(), 7), { animate: true });
-      fullMarker.setLatLng([lat, lon]);
+      fullMap.setView(fullCenter, Math.max(fullMap.getZoom(), 7), { animate: false });
+      fullMarker.setLatLng(fullCenter);
     }
 
     if (label) fullMarker.bindPopup(`<strong>${window.WeatherAPI.escapeHtml(label)}</strong>`);
-    setTimeout(() => fullMap && fullMap.invalidateSize(), 180);
+    setTimeout(() => {
+      if (fullMap && fullCenter) {
+        fullMap.invalidateSize({ animate: false });
+        fullMap.setView(fullCenter, fullMap.getZoom(), { animate: false });
+      }
+    }, 180);
     renderActiveFullFrame();
   }
 
@@ -244,8 +273,14 @@ window.WeatherMap = (() => {
 
   function invalidateAll() {
     setTimeout(() => {
-      if (miniMap) miniMap.invalidateSize();
-      if (fullMap) fullMap.invalidateSize();
+      if (miniMap && miniCenter) {
+        miniMap.invalidateSize({ animate: false });
+        miniMap.setView(miniCenter, miniMap.getZoom(), { animate: false });
+      }
+      if (fullMap && fullCenter) {
+        fullMap.invalidateSize({ animate: false });
+        fullMap.setView(fullCenter, fullMap.getZoom(), { animate: false });
+      }
     }, 150);
   }
 

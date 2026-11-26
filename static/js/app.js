@@ -50,12 +50,26 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
+  function updateNavScrollCue() {
+    const shell = document.getElementById("main-nav-shell");
+    const nav = document.getElementById("main-nav");
+    if (!shell || !nav) return;
+    const canScrollLeft = nav.scrollLeft > 8;
+    const canScrollRight = nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 8;
+    shell.classList.toggle("can-scroll-left", canScrollLeft);
+    shell.classList.toggle("can-scroll-right", canScrollRight);
+  }
+
   function switchView(viewName) {
     state.view = viewName;
     document.body.dataset.view = viewName;
     document.getElementById("view-landing").classList.toggle("hidden", viewName !== "landing");
     document.getElementById("view-dashboard").classList.toggle("hidden", viewName !== "dashboard");
-    document.getElementById("main-nav").classList.toggle("hidden", viewName !== "dashboard");
+    const navShell = document.getElementById("main-nav-shell");
+    if (navShell) navShell.classList.toggle("hidden", viewName !== "dashboard");
+    if (viewName === "dashboard") {
+      setTimeout(updateNavScrollCue, 60);
+    }
     if (viewName === "landing") {
       setTheme("clear");
       MapCtrl.stopPlayback();
@@ -70,10 +84,16 @@
     document.querySelectorAll(".nav-pill").forEach((btn) => {
       const isMatch = btn.dataset.tab === tabName;
       btn.classList.toggle("active", isMatch);
-      if (isMatch) activeBtn = btn;
+      if (isMatch) {
+        btn.setAttribute("aria-current", "page");
+        activeBtn = btn;
+      } else {
+        btn.removeAttribute("aria-current");
+      }
     });
     if (activeBtn && window.innerWidth < 768) {
       activeBtn.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      setTimeout(updateNavScrollCue, 260);
     }
     document.querySelectorAll(".tab-panel").forEach((panel) => {
       panel.classList.toggle("hidden", panel.id !== `tab-${tabName}`);
@@ -120,9 +140,23 @@
     });
   }
 
-  /* ── Carga rápida orientada a base de datos ──────────────────────────── */
-  async function loadCityByCoords(lat, lon, meta = {}, days = 7) {
+  /* ── Carga rápida orientada a caché multinivel ───────────────────────── */
+  async function loadCityByCoords(lat, lon, meta = {}, days = 7, forceOverview = false) {
     switchView("dashboard");
+    const shouldGoOverview = forceOverview || state.activeTab === "search";
+    if (shouldGoOverview && state.activeTab !== "overview") {
+      state.activeTab = "overview";
+      document.querySelectorAll(".nav-pill").forEach((btn) => {
+        const isMatch = btn.dataset.tab === "overview";
+        btn.classList.toggle("active", isMatch);
+        if (isMatch) btn.setAttribute("aria-current", "page");
+        else btn.removeAttribute("aria-current");
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.toggle("hidden", panel.id !== "tab-overview");
+      });
+    }
+
     setLoading(true, `Consultando clima${meta.name ? ` para ${meta.name}` : ""}...`);
     try {
       const bundle = await API.getWeather({
@@ -131,8 +165,12 @@
         name: meta.name,
         country: meta.country,
         admin1: meta.admin1,
+        location_source: meta.location_source,
         days,
       });
+      if (meta.location_source && bundle.location && !bundle.location.location_source) {
+        bundle.location.location_source = meta.location_source;
+      }
       state.location = bundle.location;
       state.bundle = bundle;
       state.overviewMode = "single_forecast";
@@ -149,8 +187,9 @@
       });
       if (state.activeTab !== "overview") {
         await switchTab(state.activeTab);
+      } else {
+        MapCtrl.invalidateAll();
       }
-      // Si el servidor inició refresco en segundo plano porque los datos habían vencido, recargar suavemente en 6s
       if (bundle.refreshing_in_background) {
         setTimeout(() => silentSyncActiveCity(), 6000);
       }
@@ -200,6 +239,10 @@
         query: q,
         lat: refLoc ? refLoc.latitude : undefined,
         lon: refLoc ? refLoc.longitude : undefined,
+        name: refLoc ? refLoc.name : undefined,
+        admin1: refLoc ? refLoc.admin1 : undefined,
+        country: refLoc ? refLoc.country : undefined,
+        location_source: refLoc ? refLoc.location_source : undefined,
       });
 
       const sTabInp = document.getElementById("search-tab-input");
@@ -309,6 +352,112 @@
     return resolveViaIp();
   }
 
+  /* ── Geolocalización GPS exacta a pedido del usuario ─────────────────── */
+  async function requestExactGpsLocation() {
+    if (!navigator.geolocation) {
+      toast("Este navegador no soporta geolocalización GPS. Usando ubicación aproximada por red.", true);
+      const ipRes = await detectLocationInBackground();
+      if (ipRes) await loadCityByCoords(ipRes.latitude, ipRes.longitude, { ...ipRes, location_source: "ip" }, 7, true);
+      return;
+    }
+    setLoading(true, "Detectando tu ubicación exacta mediante GPS...");
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000,
+        });
+      });
+      const lat = Number(pos.coords.latitude.toFixed(4));
+      const lon = Number(pos.coords.longitude.toFixed(4));
+      const rev = await API.reverseGeocode(lat, lon, "gps");
+      const exactLoc = {
+        ...(rev && rev.location ? rev.location : { name: "Mi ubicación", latitude: lat, longitude: lon }),
+        latitude: lat,
+        longitude: lon,
+        location_source: "gps",
+      };
+      state.detectedLocation = exactLoc;
+      await loadCityByCoords(lat, lon, exactLoc, 7, true);
+      toast(`Ubicación exacta detectada: ${exactLoc.display_label || exactLoc.name}`);
+    } catch (err) {
+      setLoading(false);
+      const ipLoc = await detectLocationInBackground();
+      if (ipLoc) {
+        toast(`Sin permiso GPS (${err.message || "denegado"}). Mostrando ubicación aproximada: ${ipLoc.name}.`);
+        await loadCityByCoords(ipLoc.latitude, ipLoc.longitude, { ...ipLoc, location_source: "ip" }, 7, true);
+      } else {
+        toast("No se pudo obtener la ubicación exacta. Buscá tu localidad manualmente.", true);
+      }
+    }
+  }
+
+  /* ── Renderizado de Confianza Meteorológica Real ─────────────────────── */
+  function renderConfidenceIndicator(conf) {
+    const strip = document.getElementById("hero-confidence-strip");
+    const factorsEl = document.getElementById("confidence-factors-row");
+    if (!strip) return;
+
+    if (!conf || conf.available === undefined) {
+      strip.classList.add("hidden");
+      if (factorsEl) factorsEl.classList.add("hidden");
+      return;
+    }
+
+    strip.classList.remove("hidden");
+    if (!conf.available || conf.score_pct === null || conf.score_pct === undefined) {
+      strip.className = "confidence-strip conf-na";
+      strip.innerHTML = `
+        <div class="confidence-top-row">
+          <span class="confidence-label"><i data-lucide="shield-alert"></i> Confianza no disponible</span>
+          <span class="confidence-pct tabular">—</span>
+        </div>
+        <p class="confidence-note">${API.escapeHtml(conf.reason || "Insuficientes fuentes independientes para calcular confianza.")}</p>
+      `;
+      if (factorsEl) factorsEl.classList.add("hidden");
+      return;
+    }
+
+    const score = Number(conf.score_pct);
+    const tier = score >= 85 ? "conf-high" : score >= 70 ? "conf-good" : score >= 55 ? "conf-mod" : "conf-low";
+    strip.className = `confidence-strip ${tier}`;
+    strip.innerHTML = `
+      <div class="confidence-top-row">
+        <span class="confidence-label"><i data-lucide="shield-check"></i> Confianza del pronóstico</span>
+        <span class="confidence-pct tabular">${score}% · ${API.escapeHtml(conf.level || "")}</span>
+      </div>
+      <div class="confidence-meter-track" aria-hidden="true">
+        <div class="confidence-meter-fill" style="width:${Math.max(8, Math.min(100, score))}%"></div>
+      </div>
+      <p class="confidence-note">${API.escapeHtml(conf.summary || "")}</p>
+    `;
+
+    if (factorsEl && conf.factors) {
+      const f = conf.factors;
+      const chips = [
+        { lbl: "Modelos", val: f.model_agreement_pct },
+        { lbl: "Lluvia y viento", val: f.precip_consensus_pct },
+        { lbl: "Frescura", val: f.freshness_pct },
+        { lbl: "Fuentes", val: f.availability_pct },
+      ];
+      if (f.historical_backing_pct !== null && f.historical_backing_pct !== undefined) {
+        chips.push({ lbl: "Historial real", val: f.historical_backing_pct });
+      }
+      factorsEl.innerHTML = chips
+        .filter((c) => c.val !== null && c.val !== undefined)
+        .map(
+          (c) => `
+        <div class="conf-factor-pill">
+          <span>${API.escapeHtml(c.lbl)}</span>
+          <strong class="tabular">${Math.round(c.val)}%</strong>
+        </div>`
+        )
+        .join("");
+      factorsEl.classList.remove("hidden");
+    }
+  }
+
   /* ── Renderizado TAB 1: RESUMEN ──────────────────────────────────────── */
   function renderOverviewForecast(b) {
     setTheme(b.theme);
@@ -340,9 +489,33 @@
 
     const cur = b.current;
     document.getElementById("hero-city-name").textContent = b.location.name;
-    document.getElementById("hero-city-sub").textContent =
-      [b.location.admin1, b.location.country].filter(Boolean).join(", ") ||
-      `${b.location.latitude.toFixed(2)}, ${b.location.longitude.toFixed(2)}`;
+    const regionText = [b.location.admin1, b.location.country].filter(Boolean).join(", ");
+    const coordsText = `${Number(b.location.latitude).toFixed(2)}°, ${Number(b.location.longitude).toFixed(2)}°`;
+    document.getElementById("hero-city-sub").textContent = regionText ? `${regionText} · ${coordsText}` : coordsText;
+
+    // Transparencia de precisión de ubicación (GPS exacto vs IP aproximada)
+    const locBadge = document.getElementById("hero-location-badge");
+    if (locBadge) {
+      const src = b.location.location_source;
+      if (src === "gps") {
+        locBadge.className = "location-precision-row is-exact";
+        locBadge.innerHTML = `<i data-lucide="locate-fixed"></i><span>Ubicación exacta (GPS)</span>`;
+      } else if (src === "ip" || src === "fallback") {
+        locBadge.className = "location-precision-row is-approx";
+        locBadge.innerHTML = `
+          <i data-lucide="navigation"></i>
+          <span>Ubicación aproximada por red</span>
+          <button type="button" class="loc-upgrade-btn" id="btn-upgrade-gps">Usar GPS exacto</button>
+        `;
+        const upBtn = document.getElementById("btn-upgrade-gps");
+        if (upBtn) upBtn.addEventListener("click", requestExactGpsLocation);
+      } else {
+        locBadge.className = "location-precision-row hidden";
+        locBadge.innerHTML = "";
+      }
+    }
+
+    renderConfidenceIndicator(b.confidence);
 
     const favBtn = document.getElementById("btn-favorite-toggle");
     favBtn.classList.toggle("is-favorite", Boolean(b.location.is_favorite));
@@ -459,8 +632,8 @@
 
     document.getElementById("consensus-mini-metrics").innerHTML = `
       <div class="mini-kpi-box"><span>Selección final</span><strong class="tabular">${API.fmtTemp(cp.selected_temp_c ?? cur.temperature_c, state.unitSystem, 1)}</strong></div>
+      <div class="mini-kpi-box"><span>Confianza</span><strong class="tabular">${b.confidence && b.confidence.available ? `${b.confidence.score_pct}% (${API.escapeHtml(b.confidence.level)})` : "No disponible"}</strong></div>
       <div class="mini-kpi-box"><span>Rango fuentes</span><strong class="tabular">${cp.temp_min_c !== undefined && cp.temp_max_c !== undefined ? `${API.convertTemp(cp.temp_min_c, state.unitSystem)}° – ${API.convertTemp(cp.temp_max_c, state.unitSystem)}°` : "—"}</strong></div>
-      <div class="mini-kpi-box"><span>Concordancia</span><strong>${API.escapeHtml(cp.agreement_level || "Alta")}</strong></div>
       <div class="mini-kpi-box"><span>Fuentes usadas</span><strong class="tabular">${sourcesCount} reales</strong></div>
     `;
 
@@ -679,6 +852,9 @@
             ? Math.max(8, ((d.temp_max_c - d.temp_min_c) / span) * 100)
             : 20;
         const sunInfo = d.sunrise && d.sunset ? `${API.fmtHour(d.sunrise)}–${API.fmtHour(d.sunset)}` : "";
+        const gustsTxt = d.wind_gusts_max_kmh ? ` · Ráf. ${Math.round(API.convertWind(d.wind_gusts_max_kmh, state.unitSystem))}` : "";
+        const uvTxt = d.uv_index_max !== null && d.uv_index_max !== undefined ? `UV ${d.uv_index_max.toFixed(1)}` : "";
+        const metaExtra = [uvTxt, sunInfo].filter(Boolean).join(" · ") || "—";
         return `
         <div class="daily-row">
           <div class="daily-date">${API.escapeHtml(API.fmtShortDate(d.date))}</div>
@@ -694,8 +870,8 @@
             <div class="temp-bar-track"><div class="temp-bar-fill" style="left:${leftPct.toFixed(1)}%;width:${widthPct.toFixed(1)}%"></div></div>
             <strong>${API.fmtTemp(d.temp_max_c, state.unitSystem, 0)}</strong>
           </div>
-          <div class="daily-wind tabular">${API.fmtWind(d.wind_speed_max_kmh, state.unitSystem)}</div>
-          <div class="daily-uv tabular">${d.uv_index_max !== null ? `UV ${d.uv_index_max.toFixed(1)}` : sunInfo}</div>
+          <div class="daily-wind tabular">${API.fmtWind(d.wind_speed_max_kmh, state.unitSystem)}${gustsTxt ? `<span class="daily-sub-meta">${API.escapeHtml(gustsTxt)}</span>` : ""}</div>
+          <div class="daily-uv tabular">${API.escapeHtml(metaExtra)}</div>
         </div>`;
       })
       .join("");
@@ -743,14 +919,22 @@
     }
   }
 
-  /* ── TAB 5: FUENTES Y COMPARATIVA (SOLO LECTURA DESDE BD) ────────────── */
+  /* ── TAB 5: FUENTES Y COMPARATIVA (CACHÉ INSTANTÁNEA SIN DUPLICADOS) ── */
   async function loadProvidersComparison() {
     if (!state.location) return;
-    setLoading(true, "Cargando comparativa multiproveedor desde base local...");
+    let loadingShown = false;
+    const spinnerTimer = setTimeout(() => {
+      loadingShown = true;
+      setLoading(true, "Consolidando comparativa multiproveedor...");
+    }, 120);
     try {
       const comp = await API.compareProviders({
         lat: state.location.latitude,
         lon: state.location.longitude,
+        name: state.location.name,
+        admin1: state.location.admin1,
+        country: state.location.country,
+        location_source: state.location.location_source,
         days: 7,
       });
       state.providerComp = comp;
@@ -758,19 +942,21 @@
     } catch (err) {
       toast(`Error cargando comparativa: ${err.message}`, true);
     } finally {
-      setLoading(false);
+      clearTimeout(spinnerTimer);
+      if (loadingShown) setLoading(false);
     }
   }
 
   function renderProvidersTab(comp) {
     const c = comp.consensus || {};
     const prov = comp.provenance || {};
+    const conf = comp.confidence || {};
     const badge = document.getElementById("providers-freshness-badge");
     if (badge) {
       badge.textContent = comp.refreshing_in_background
         ? "Actualizando en segundo plano..."
         : comp.from_database
-        ? `Desde base local · ${API.fmtHour(comp.fetched_at)} UTC`
+        ? `Caché vigente · ${API.fmtHour(comp.fetched_at)} UTC`
         : `Recién verificado · ${API.fmtHour(comp.fetched_at)} UTC`;
     }
 
@@ -778,14 +964,14 @@
 
     document.getElementById("providers-consensus-grid").innerHTML = `
       <div class="kpi-tile">
-        <span class="kpi-tile-label">Temperatura Seleccionada</span>
+        <span class="kpi-tile-label">Temperatura Consolidada</span>
         <span class="kpi-tile-value tabular">${API.fmtTemp(c.selected_temp_c ?? c.temp_mean_c, state.unitSystem, 1)}</span>
         <span class="kpi-tile-sub tabular">Media ${API.fmtTemp(c.temp_mean_c, state.unitSystem, 1)} · Mediana ${API.fmtTemp(c.temp_median_c, state.unitSystem, 1)}</span>
       </div>
       <div class="kpi-tile">
-        <span class="kpi-tile-label">Dispersión entre Fuentes</span>
-        <span class="kpi-tile-value tabular">±${c.temp_std_c ?? 0} °C</span>
-        <span class="kpi-tile-sub">Concordancia: ${API.escapeHtml(c.agreement_level || "—")} (Rango ${c.temp_spread_c ?? 0} °C)</span>
+        <span class="kpi-tile-label">Confianza Meteorológica</span>
+        <span class="kpi-tile-value tabular">${conf.available && conf.score_pct !== null ? `${conf.score_pct}%` : "N/D"}</span>
+        <span class="kpi-tile-sub">${API.escapeHtml(conf.available ? `${conf.level} · Dispersión ±${c.temp_std_c ?? 0} °C` : conf.reason || "Fuentes insuficientes")}</span>
       </div>
       <div class="kpi-tile">
         <span class="kpi-tile-label">Fuente Primaria</span>
@@ -793,9 +979,9 @@
         <span class="kpi-tile-sub">${prov.primary_accuracy_pct ? `Precisión real ${prov.primary_accuracy_pct}% (N=${prov.primary_samples})` : "Seleccionada por frescura y concordancia"}</span>
       </div>
       <div class="kpi-tile">
-        <span class="kpi-tile-label">Fuentes Evaluadas</span>
+        <span class="kpi-tile-label">Agencias Evaluadas</span>
         <span class="kpi-tile-value tabular">${comp.active_providers} activas</span>
-        <span class="kpi-tile-sub">Administradas automáticamente en servidor</span>
+        <span class="kpi-tile-sub">Rango térmico ${c.temp_spread_c ?? 0} °C (${API.escapeHtml(c.agreement_level || "—")})</span>
       </div>
     `;
 
@@ -877,6 +1063,9 @@
       const data = await API.getAccuracy({
         lat: scope === "location" && state.location ? state.location.latitude : undefined,
         lon: scope === "location" && state.location ? state.location.longitude : undefined,
+        name: scope === "location" && state.location ? state.location.name : undefined,
+        admin1: scope === "location" && state.location ? state.location.admin1 : undefined,
+        country: scope === "location" && state.location ? state.location.country : undefined,
         scope,
         source_type: sourceType || undefined,
       });
@@ -898,6 +1087,9 @@
       const res = await API.runBacktest({
         lat: state.location.latitude,
         lon: state.location.longitude,
+        name: state.location.name,
+        admin1: state.location.admin1,
+        country: state.location.country,
         past_days: 7,
       });
       toast(
@@ -1017,6 +1209,9 @@
       const h = await API.getHistory({
         lat: state.location.latitude,
         lon: state.location.longitude,
+        name: state.location.name,
+        admin1: state.location.admin1,
+        country: state.location.country,
         start_date,
         end_date,
       });
@@ -1051,7 +1246,7 @@
       <div class="kpi-tile">
         <span class="kpi-tile-label">Viento Máximo</span>
         <span class="kpi-tile-value tabular">${API.fmtWind(s.wind_max_kmh, state.unitSystem)}</span>
-        <span class="kpi-tile-sub tabular">${API.escapeHtml(s.windiest_day || "—")} · ${h.local_observations_count} obs. locales</span>
+        <span class="kpi-tile-sub tabular">${API.escapeHtml(s.windiest_day || "—")} · ${h.days_count} días ERA5</span>
       </div>
     `;
 
@@ -1167,7 +1362,7 @@
         if (status) status.classList.add("hidden");
         const sTabInp = document.getElementById("search-tab-input");
         if (sTabInp) sTabInp.value = chosen.display_label || chosen.name;
-        loadCityByCoords(chosen.latitude, chosen.longitude, chosen, 7);
+        loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
       });
     });
   }
@@ -1182,8 +1377,12 @@
       return;
     }
 
-    // Si es una consulta compleja determinística (ej: comparar ciudades o historial), procesarla con el motor de queries
-    if (q.includes(",") || /\b(comparar|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q)) {
+    // Si es una consulta compleja (comparativa, historial o coordenadas directas), resolverla directamente
+    if (
+      q.includes(",") ||
+      /^-?\d{1,2}(\.\d+)?\s*[,;\s]\s*-?\d{1,3}(\.\d+)?$/.test(q) ||
+      /\b(comparar|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q)
+    ) {
       if (status) {
         status.textContent = "Procesando consulta meteorológica...";
         status.classList.remove("hidden");
@@ -1193,25 +1392,25 @@
       return;
     }
 
-    // Búsqueda de ubicación: geocodificar y consultar clima
+    // Búsqueda de ubicación: geocodificar sin descargar pronósticos especulativos innecesarios
     if (status) {
-      status.textContent = `Buscando "${q}" en la base geográfica...`;
+      status.textContent = `Buscando "${q}"...`;
       status.classList.remove("hidden");
     }
     try {
       const res = await API.geocode(q, 7);
       const items = res.results || [];
       if (!items.length) {
-        // Intentar consulta natural directa si geocode no arrojó resultados directos
         await submitNaturalQuery(q);
         return;
       }
-      renderSearchTabResults(items);
-      // Si hay coincidencia exacta de primer nivel, pre-cargar de inmediato
-      const first = items[0];
-      if (items.length === 1 || first.name.toLowerCase() === q.toLowerCase()) {
-        loadCityByCoords(first.latitude, first.longitude, first, 7);
+      if (items.length === 1) {
+        if (list) list.classList.add("hidden");
+        if (status) status.classList.add("hidden");
+        await loadCityByCoords(items[0].latitude, items[0].longitude, { ...items[0], location_source: "search" }, 7, true);
+        return;
       }
+      renderSearchTabResults(items);
     } catch (err) {
       if (status) {
         status.textContent = `Error buscando ubicación: ${err.message}`;
@@ -1313,6 +1512,16 @@
           searchTabInp.focus();
         });
       }
+    }
+
+    const searchGpsBtn = document.getElementById("btn-search-gps");
+    if (searchGpsBtn) {
+      searchGpsBtn.addEventListener("click", requestExactGpsLocation);
+    }
+
+    const mainNav = document.getElementById("main-nav");
+    if (mainNav) {
+      mainNav.addEventListener("scroll", updateNavScrollCue, { passive: true });
     }
 
     document.querySelectorAll(".nav-pill").forEach((btn) => {
@@ -1441,6 +1650,7 @@
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         MapCtrl.invalidateAll();
+        updateNavScrollCue();
         const nowCompact = window.innerWidth < 560;
         if (nowCompact !== state.lastCompactState) {
           state.lastCompactState = nowCompact;
