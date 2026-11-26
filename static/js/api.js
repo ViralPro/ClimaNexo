@@ -107,8 +107,18 @@ window.WeatherAPI = (() => {
     return p;
   }
 
-  async function fetchJsonWithTimeout(url, timeoutMs = 9500) {
+  async function fetchJsonWithTimeout(url, timeoutMs = 9500, externalSignal = null) {
     const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    let onExternalAbort = null;
+    if (ctrl && externalSignal) {
+      if (externalSignal.aborted) {
+        const abortErr = new Error("Aborted");
+        abortErr.name = "AbortError";
+        throw abortErr;
+      }
+      onExternalAbort = () => ctrl.abort();
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
     const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try {
       const resp = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
@@ -116,6 +126,9 @@ window.WeatherAPI = (() => {
       return await resp.json();
     } finally {
       if (timer) clearTimeout(timer);
+      if (externalSignal && onExternalAbort) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
     }
   }
 
@@ -282,78 +295,452 @@ window.WeatherAPI = (() => {
   }
 
   function locKey(lat, lon) {
-    // 3 decimales (~110 m) preserva localidades específicas sin mezclar ciudades vecinas
-    return `${Number(lat).toFixed(3)},${Number(lon).toFixed(3)}`;
+    // 4 decimales (~11 m) evita mezclar localidades vecinas en caché
+    return `${Number(lat).toFixed(4)},${Number(lon).toFixed(4)}`;
+  }
+
+  function validateLocation(loc) {
+    if (!loc || typeof loc !== "object") return false;
+    const lat = Number(loc.latitude);
+    const lon = Number(loc.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
+    if (Math.abs(lat) < 0.0001 && Math.abs(lon) < 0.0001) return false;
+    if (!String(loc.name || "").trim()) return false;
+    return true;
+  }
+
+  function levenshtein(a, b) {
+    const s = normKey(a);
+    const t = normKey(b);
+    if (s === t) return 0;
+    if (!s.length) return t.length;
+    if (!t.length) return s.length;
+    if (Math.abs(s.length - t.length) > 3) return 4;
+    const prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+    const curr = new Array(t.length + 1);
+    for (let i = 1; i <= s.length; i++) {
+      curr[0] = i;
+      for (let j = 1; j <= t.length; j++) {
+        const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+        curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      }
+      for (let j = 0; j <= t.length; j++) prev[j] = curr[j];
+    }
+    return prev[t.length];
+  }
+
+  const STOP_WORDS = new Set(["de", "del", "la", "las", "los", "el", "en", "provincia", "ciudad", "municipio", "departamento", "partido", "estado", "region"]);
+
+  function tokenizeGeo(str) {
+    return normKey(str)
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+  }
+
+  function classifyOpenMeteoType(fc) {
+    const code = String(fc || "").toUpperCase();
+    if (code === "PPLC") return "Capital";
+    if (code === "PPLA" || code === "PPLA2" || code === "PPL") return "Ciudad / Localidad";
+    if (code === "PPLA3" || code === "PPLA4" || code === "PPLX") return "Localidad";
+    if (code === "ADM1") return "Provincia / Región";
+    if (code === "ADM2" || code === "ADM3") return "Departamento";
+    if (code === "PCLI" || code === "PCL") return "País";
+    return "Ubicación";
+  }
+
+  function classifyPhotonType(props) {
+    const t = String(props.type || "").toLowerCase();
+    const v = String(props.osm_value || "").toLowerCase();
+    if (v === "city") return "Ciudad";
+    if (v === "town" || v === "village" || v === "hamlet") return "Localidad";
+    if (v === "suburb" || v === "neighbourhood" || t === "district") return "Barrio / Distrito";
+    if (t === "county" || v === "county") return "Departamento";
+    if (t === "state" || v === "state" || v === "province") return "Provincia / Región";
+    if (t === "country" || v === "country") return "País";
+    return "Localidad";
   }
 
   function decorateLocation(loc) {
     const st = loadStore();
-    const key = locKey(loc.latitude, loc.longitude);
-    const id = loc.id || Math.abs(key.split("").reduce((a, b) => (a << 5) - a + b.charCodeAt(0), 0));
-    const parts = [loc.name];
-    if (loc.admin1 && loc.admin1.toLowerCase() !== String(loc.name || "").toLowerCase()) parts.push(loc.admin1);
-    if (loc.country) parts.push(loc.country);
+    const lat = Number(Number(loc.latitude).toFixed(4));
+    const lon = Number(Number(loc.longitude).toFixed(4));
+    const key = locKey(lat, lon);
+    const uid = loc.uid || `${key}:${normKey(loc.name)}`;
+    const id = loc.id || Math.abs(uid.split("").reduce((a, b) => (a << 5) - a + b.charCodeAt(0), 0));
+    const admin2 = String(loc.admin2 || "").trim();
+    const admin1 = String(loc.admin1 || "").trim();
+    const country = String(loc.country || "").trim();
+    const name = String(loc.name || "").trim();
+
+    const parts = [name];
+    if (admin2 && normKey(admin2) !== normKey(name) && normKey(admin2) !== normKey(admin1)) {
+      parts.push(admin2);
+    }
+    if (admin1 && normKey(admin1) !== normKey(name)) {
+      parts.push(admin1);
+    }
+    if (country && normKey(country) !== normKey(name)) {
+      parts.push(country);
+    }
     const display_label = loc.display_label || parts.filter(Boolean).join(", ");
     return {
       ...loc,
-      latitude: Number(Number(loc.latitude).toFixed(4)),
-      longitude: Number(Number(loc.longitude).toFixed(4)),
+      name,
+      admin2,
+      admin1,
+      country,
+      latitude: lat,
+      longitude: lon,
+      uid,
       id,
       display_label,
       is_favorite: Boolean(st.favorites[id] || st.favorites[key]),
     };
   }
 
-  /* ── Geocodificación y Geolocalización precisa con caché 24h ─────────── */
-  async function staticGeocode(q, count = 7) {
+  function tokenMatchesField(tok, fieldNorm, fieldWords) {
+    if (!tok || !fieldNorm) return { matched: false, exact: false, fuzzy: false, dist: 99 };
+    if (fieldWords.includes(tok) || fieldNorm === tok) return { matched: true, exact: true, fuzzy: false, dist: 0 };
+    if (fieldWords.some((w) => w.startsWith(tok))) return { matched: true, exact: false, fuzzy: false, dist: 0 };
+    if (tok.length >= 4) {
+      let bestDist = 99;
+      const maxDist = tok.length >= 6 ? 2 : 1;
+      for (const w of fieldWords) {
+        if (w.length >= 4) {
+          const d = levenshtein(tok, w);
+          if (d <= maxDist && d < bestDist) bestDist = d;
+        }
+      }
+      if (bestDist <= maxDist) {
+        return { matched: true, exact: false, fuzzy: true, dist: bestDist };
+      }
+    }
+    return { matched: false, exact: false, fuzzy: false, dist: 99 };
+  }
+
+  function scoreGeoCandidate(loc, rawQuery) {
+    if (!validateLocation(loc)) return null;
+    const clean = String(rawQuery || "").trim();
+    const commaParts = clean.split(",").map((s) => s.trim()).filter(Boolean);
+    const primaryQuery = commaParts[0] || clean;
+    const qualifierParts = commaParts.slice(1);
+
+    const qPrimaryNorm = normKey(primaryQuery);
+    const nameNorm = normKey(loc.name);
+    const regionNorm = normKey([loc.admin2, loc.admin1, loc.country, loc.country_code].filter(Boolean).join(" "));
+    const fullNorm = normKey([loc.name, loc.admin2, loc.admin1, loc.country, loc.country_code].filter(Boolean).join(" "));
+    const nameWords = tokenizeGeo(loc.name);
+    const regionWords = tokenizeGeo(regionNorm);
+    const fullWords = tokenizeGeo(fullNorm);
+
+    // 1. Validación estricta de calificadores después de coma (provincia / país)
+    let matchedQualifiers = 0;
+    if (qualifierParts.length) {
+      for (const qp of qualifierParts) {
+        const qTokens = tokenizeGeo(qp);
+        if (!qTokens.length) continue;
+        const ok = qTokens.every((qt) => tokenMatchesField(qt, regionNorm, regionWords).matched);
+        if (!ok) return null; // RECHAZAR candidatos cuya provincia/país no coincide con lo escrito
+        matchedQualifiers++;
+      }
+    }
+
+    let score = 0;
+    let isFuzzy = false;
+    let isExactName = false;
+
+    // 2. Coincidencia del nombre principal (exacta > prefijo > coincidencia por tokens)
+    if (nameNorm === qPrimaryNorm) {
+      score += 1500;
+      isExactName = true;
+    } else if (nameNorm.startsWith(qPrimaryNorm + " ") && qPrimaryNorm.length >= 2) {
+      score += 920;
+    } else if (nameNorm.startsWith(qPrimaryNorm) && qPrimaryNorm.length >= 2) {
+      score += 820;
+    } else {
+      // Si hay calificadores después de coma, ya fueron validados en el paso 1:
+      // evaluamos únicamente los tokens del término principal contra el nombre para no contar doble.
+      const evalTokens = qualifierParts.length ? tokenizeGeo(primaryQuery) : tokenizeGeo(clean);
+      const primaryTokens = tokenizeGeo(primaryQuery);
+      if (!evalTokens.length) return null;
+
+      let exactNameHits = 0;
+      let prefixNameHits = 0;
+      let regionOnlyHits = 0;
+      let fuzzyHits = 0;
+      let fuzzyDistPenalty = 0;
+
+      for (const qt of evalTokens) {
+        const inName = tokenMatchesField(qt, nameNorm, nameWords);
+        if (inName.matched) {
+          if (inName.exact) exactNameHits++;
+          else if (inName.fuzzy) {
+            fuzzyHits++;
+            fuzzyDistPenalty += (inName.dist || 1) * 95;
+          } else {
+            prefixNameHits++;
+          }
+          continue;
+        }
+        // Solo permitir tokens de región/país cuando el usuario no separó con coma (ej: "San Francisco Córdoba")
+        if (!qualifierParts.length) {
+          const inRegion = tokenMatchesField(qt, regionNorm, regionWords);
+          if (inRegion.matched) {
+            if (inRegion.fuzzy) {
+              fuzzyHits++;
+              fuzzyDistPenalty += (inRegion.dist || 1) * 95;
+            } else {
+              regionOnlyHits++;
+            }
+          }
+        }
+      }
+
+      const nameHits = exactNameHits + prefixNameHits + (fuzzyHits > 0 && regionOnlyHits === 0 ? fuzzyHits : 0);
+      const matchedTotal = exactNameHits + prefixNameHits + regionOnlyHits + fuzzyHits;
+      // Regla estricta: debe coincidir al menos con el nombre y cubrir >= 75% de tokens (100% si hay 1–2 tokens)
+      const minRequired = evalTokens.length <= 2 ? evalTokens.length : Math.ceil(evalTokens.length * 0.75);
+      if (matchedTotal < minRequired || nameHits === 0) {
+        // Excepción: typo en una sola palabra principal (ej: "Cordba" -> "Córdoba")
+        const dist = primaryTokens.length === 1 && qPrimaryNorm.length >= 4 ? levenshtein(qPrimaryNorm, nameNorm) : 99;
+        if (dist <= (qPrimaryNorm.length >= 6 ? 2 : 1)) {
+          score += Math.max(40, 380 - dist * 120);
+          isFuzzy = true;
+        } else {
+          return null;
+        }
+      } else {
+        const fuzzyScore = fuzzyHits > 0 ? Math.max(20, fuzzyHits * 250 - fuzzyDistPenalty) : 0;
+        const rawTokenScore = exactNameHits * 240 + prefixNameHits * 150 + regionOnlyHits * 210 + fuzzyScore;
+        // Penalizar palabras sobrantes en el nombre (ej: "Plaza San Francisco" cuando se buscó "San Francisco")
+        const matchedNameWordCount = exactNameHits + prefixNameHits + (fuzzyHits > 0 ? 1 : 0);
+        const extraNameWords = Math.max(0, nameWords.length - matchedNameWordCount);
+        score += Math.min(820, rawTokenScore) - extraNameWords * 140;
+        if (fuzzyHits > 0) isFuzzy = true;
+        // Bonus solo por prefijo de PALABRA COMPLETA en consultas multi-palabra (ej: "San Francisco Córdoba" -> "San Francisco")
+        if (!isFuzzy && qPrimaryNorm.startsWith(nameNorm + " ") && nameNorm.length >= 3) {
+          score += 560;
+          isExactName = true;
+        }
+      }
+    }
+
+    // 3. Bonus de calificadores verificados, tipo geográfico y población (solo desempate)
+    score += matchedQualifiers * 320;
+    const pType = String(loc.place_type || "");
+    if (pType.includes("Capital") || pType.includes("Ciudad") || pType.includes("Localidad")) score += 85;
+    else if (pType.includes("Barrio")) score += 45;
+    else if (pType.includes("Provincia")) score += 35;
+    else if (pType.includes("Departamento")) score += 10;
+
+    if (loc.source_geocoder === "open_meteo") score += 25;
+    if (loc.population && Number(loc.population) > 0) {
+      score += Math.min(90, Math.log10(Number(loc.population)) * 13);
+    }
+
+    return {
+      ...loc,
+      _score: Math.round(score),
+      is_exact_match: isExactName && !isFuzzy,
+      is_fuzzy_match: isFuzzy,
+      has_qualifiers: matchedQualifiers > 0 || tokenizeGeo(clean).length > tokenizeGeo(loc.name).length,
+    };
+  }
+
+  function deduplicateGeoResults(scoredList) {
+    const out = [];
+    for (const item of scoredList) {
+      const dupIdx = out.findIndex((existing) => {
+        const sameName = normKey(existing.name) === normKey(item.name);
+        const sameCountry =
+          (existing.country_code && item.country_code && existing.country_code.toUpperCase() === item.country_code.toUpperCase()) ||
+          (existing.country && item.country && normKey(existing.country) === normKey(item.country));
+        const nearCoords =
+          Math.abs(existing.latitude - item.latitude) < 0.09 &&
+          Math.abs(existing.longitude - item.longitude) < 0.09;
+        return sameName && sameCountry && nearCoords;
+      });
+      if (dupIdx < 0) {
+        out.push(item);
+      } else {
+        // Conservar el registro con más metadatos (población / elevación / open_meteo)
+        const cur = out[dupIdx];
+        const preferNew =
+          (item.source_geocoder === "open_meteo" && cur.source_geocoder !== "open_meteo") ||
+          (item._score > cur._score && !cur.population);
+        if (preferNew) {
+          out[dupIdx] = {
+            ...item,
+            admin2: item.admin2 || cur.admin2,
+            admin1: item.admin1 || cur.admin1,
+            country: item.country || cur.country,
+            _score: Math.max(item._score, cur._score),
+          };
+        } else {
+          out[dupIdx] = {
+            ...cur,
+            admin2: cur.admin2 || item.admin2,
+            _score: Math.max(cur._score, item._score),
+          };
+        }
+      }
+    }
+    return out;
+  }
+
+  function shouldAutoSelectGeoResult(rawQuery, results) {
+    if (!Array.isArray(results) || results.length === 0) return null;
+    // Si hay una sola coincidencia real y NO es un typo difuso, es inequívoca
+    if (results.length === 1 && !results[0].is_fuzzy_match) {
+      return results[0];
+    }
+    // Si el usuario incluyó calificadores explícitos (coma o provincia/país) y solo 1 candidato es coincidencia exacta + calificada
+    const hasComma = String(rawQuery || "").includes(",");
+    const exactQualified = results.filter((r) => r.is_exact_match && r.has_qualifiers && !r.is_fuzzy_match);
+    if (hasComma && exactQualified.length === 1) {
+      return exactQualified[0];
+    }
+    // Si hay múltiples localidades posibles (ej. Córdoba AR vs Córdoba ES, o San Francisco AR vs US), NO adivinar
+    return null;
+  }
+
+  /* ── Geocodificación Dual de Alta Precisión (Open-Meteo + Photon OSM) ── */
+  async function staticGeocode(q, count = 8, signal = null) {
     const clean = String(q || "").trim();
-    if (!clean) return { results: [] };
-    const ck = `geo_${normKey(clean)}_${count}`;
+    if (clean.length < 2) return { query: clean, results: [] };
+    const ck = `geo_v4_${normKey(clean)}_${count}`;
     const cached = cacheGet(ck);
     if (cached) return cached.value;
 
-    return dedupe(ck, async () => {
-      try {
-        const parts = clean.split(",").map((s) => s.trim()).filter(Boolean);
-        const searchTerm = parts.length > 1 ? parts[0] : clean;
-        const filterTerms = parts.slice(1).map((p) => normKey(p));
-        const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchTerm)}&count=${Math.max(count, filterTerms.length ? 12 : count)}&language=es&format=json`;
-        const d = await fetchJsonWithTimeout(url, 8000);
-        let results = (d.results || []).map((item) =>
-          decorateLocation({
-            id: item.id,
-            name: item.name,
-            admin1: item.admin1 || "",
-            country: item.country || "",
-            country_code: item.country_code || "",
-            latitude: Number(item.latitude),
-            longitude: Number(item.longitude),
-            timezone: item.timezone || "auto",
-            location_source: "search",
-          })
-        );
-        if (filterTerms.length && results.length) {
-          const matched = results.filter((loc) => {
-            const hay = normKey(`${loc.name} ${loc.admin1} ${loc.country}`);
-            return filterTerms.every((ft) => hay.includes(ft));
-          });
-          if (matched.length) results = matched;
-        }
-        results = results.slice(0, count);
-        if (results.length) {
-          const out = { results };
-          cacheSet(ck, out, TTL.GEOCODE);
-          return out;
-        }
-      } catch {
-        // fallback al catálogo base
+    const runner = async () => {
+      const commaParts = clean.split(",").map((s) => s.trim()).filter(Boolean);
+      const primaryTerm = commaParts[0] || clean;
+      const omUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(primaryTerm)}&count=15&language=es&format=json`;
+      const photonUrl =
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(clean)}&limit=12` +
+        `&layer=city&layer=district&layer=locality&layer=county&layer=state&layer=country`;
+
+      const [omRes, photonRes] = await Promise.allSettled([
+        fetchJsonWithTimeout(omUrl, 6500, signal),
+        fetchJsonWithTimeout(photonUrl, 6500, signal),
+      ]);
+
+      if (signal && signal.aborted) {
+        const abortErr = new Error("Aborted");
+        abortErr.name = "AbortError";
+        throw abortErr;
       }
-      const nk = normKey(clean);
-      const localMatches = Object.entries(DEFAULT_CITIES_MAP)
-        .filter(([k]) => k.includes(nk) || nk.includes(k))
-        .map(([, v]) => decorateLocation({ ...v, location_source: "search" }));
-      return { results: localMatches };
-    });
+
+      const rawCandidates = [];
+
+      if (omRes.status === "fulfilled" && omRes.value && Array.isArray(omRes.value.results)) {
+        omRes.value.results.forEach((item) => {
+          rawCandidates.push(
+            decorateLocation({
+              id: item.id,
+              name: item.name,
+              admin2: item.admin2 || "",
+              admin1: item.admin1 || "",
+              country: item.country || "",
+              country_code: item.country_code || "",
+              latitude: Number(item.latitude),
+              longitude: Number(item.longitude),
+              timezone: item.timezone || "auto",
+              population: item.population || null,
+              elevation: item.elevation ?? null,
+              place_type: classifyOpenMeteoType(item.feature_code),
+              source_geocoder: "open_meteo",
+              location_source: "search",
+            })
+          );
+        });
+      }
+
+      if (photonRes.status === "fulfilled" && photonRes.value && Array.isArray(photonRes.value.features)) {
+        photonRes.value.features.forEach((f) => {
+          const props = f.properties || {};
+          const coords = (f.geometry && f.geometry.coordinates) || [];
+          if (coords.length < 2) return;
+          const lon = Number(coords[0]);
+          const lat = Number(coords[1]);
+          const name = String(props.name || props.city || "").trim();
+          if (!name) return;
+          // Descartar límites puramente administrativos redundantes ("Municipio de ...", "Pedanía ...") si no fueron escritos
+          const isAdminWrapper = /^(municipio de|partido de|pedania|comuna de)\s+/i.test(normKey(name));
+          if (isAdminWrapper && !/^(municipio|partido|pedania|comuna)\b/i.test(normKey(clean))) return;
+          rawCandidates.push(
+            decorateLocation({
+              name,
+              admin2: props.county || props.city || "",
+              admin1: props.state || "",
+              country: props.country || "",
+              country_code: (props.countrycode || "").toUpperCase(),
+              latitude: lat,
+              longitude: lon,
+              timezone: "auto",
+              place_type: classifyPhotonType(props),
+              source_geocoder: "photon_osm",
+              location_source: "search",
+            })
+          );
+        });
+      }
+
+      // Respaldo de tolerancia a errores de escritura (si ambos motores devolvieron 0 para una palabra >= 5 letras, intentar prefijo Open-Meteo filtrado por Levenshtein)
+      if (!rawCandidates.length && primaryTerm.length >= 5 && !/\s/.test(primaryTerm)) {
+        try {
+          const prefixQ = primaryTerm.slice(0, 4);
+          const prefUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(prefixQ)}&count=20&language=es&format=json`;
+          const prefData = await fetchJsonWithTimeout(prefUrl, 5000, signal);
+          if (prefData && Array.isArray(prefData.results)) {
+            prefData.results.forEach((item) => {
+              rawCandidates.push(
+                decorateLocation({
+                  id: item.id,
+                  name: item.name,
+                  admin2: item.admin2 || "",
+                  admin1: item.admin1 || "",
+                  country: item.country || "",
+                  country_code: item.country_code || "",
+                  latitude: Number(item.latitude),
+                  longitude: Number(item.longitude),
+                  timezone: item.timezone || "auto",
+                  population: item.population || null,
+                  elevation: item.elevation ?? null,
+                  place_type: classifyOpenMeteoType(item.feature_code),
+                  source_geocoder: "open_meteo",
+                  location_source: "search",
+                })
+              );
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const scored = rawCandidates
+        .map((c) => scoreGeoCandidate(c, clean))
+        .filter(Boolean)
+        .sort((a, b) => b._score - a._score);
+
+      const deduped = deduplicateGeoResults(scored).slice(0, count);
+      const out = { query: clean, results: deduped };
+
+      // Cachear también resultados vacíos solo brevemente (5 min) y resultados válidos 24 h
+      if (deduped.length > 0) {
+        cacheSet(ck, out, TTL.GEOCODE);
+      } else if (omRes.status === "fulfilled" || photonRes.status === "fulfilled") {
+        cacheSet(ck, out, 300, false);
+      }
+      return out;
+    };
+
+    // Si hay AbortSignal activo, no compartir con dedupe para permitir cancelación inmediata sin afectar otras vistas
+    if (signal) return runner();
+    return dedupe(ck, runner);
   }
 
   async function staticReverseGeocode(lat, lon, sourceTag = "gps") {
@@ -452,27 +839,39 @@ window.WeatherAPI = (() => {
 
   async function resolveLocationParams(params = {}) {
     if (params.lat !== undefined && params.lon !== undefined && params.lat !== "" && params.lon !== "") {
+      const lat = Number(params.lat);
+      const lon = Number(params.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        throw new Error("Coordenadas geográficas inválidas.");
+      }
       if (params.name) {
         return decorateLocation({
+          id: params.id,
+          uid: params.uid,
           name: params.name,
+          admin2: params.admin2 || "",
           admin1: params.admin1 || "",
           country: params.country || "",
-          latitude: Number(params.lat),
-          longitude: Number(params.lon),
-          timezone: "auto",
+          country_code: params.country_code || "",
+          place_type: params.place_type || "",
+          latitude: lat,
+          longitude: lon,
+          timezone: params.timezone || "auto",
           location_source: params.location_source || "search",
         });
       }
-      const rev = await staticReverseGeocode(params.lat, params.lon, params.location_source || "search");
+      const rev = await staticReverseGeocode(lat, lon, params.location_source || "search");
       return rev.location;
     }
     if (params.city) {
-      const geo = await staticGeocode(params.city, 1);
-      if (geo.results && geo.results.length) return geo.results[0];
-      const nk = normKey(params.city);
-      if (DEFAULT_CITIES_MAP[nk]) return decorateLocation({ ...DEFAULT_CITIES_MAP[nk], location_source: "search" });
+      const geo = await staticGeocode(params.city, 8);
+      if (geo.results && geo.results.length) {
+        const auto = shouldAutoSelectGeoResult(params.city, geo.results);
+        return auto || geo.results[0];
+      }
+      throw new Error(`No se encontró ninguna ubicación real para "${params.city}".`);
     }
-    return decorateLocation({ ...DEFAULT_CITIES_MAP["buenos aires"], location_source: "fallback" });
+    throw new Error("No se especificó ninguna ubicación válida.");
   }
 
   /* ── Adaptadores Multiproveedor (7 Agencias Internacionales) ─────────── */
@@ -1329,9 +1728,12 @@ window.WeatherAPI = (() => {
     const hit = cacheGet(ck, TTL.WEATHER_STALE);
 
     if (hit) {
+      // Conservar estrictamente la identidad geográfica validada de `loc` (nunca sobreescribir con caché de otra etiqueta)
+      const lockedLoc = decorateLocation({ ...hit.value.bundle.location, ...loc });
       const clonedBundle = {
         ...hit.value.bundle,
-        location: { ...hit.value.bundle.location, ...loc },
+        location: lockedLoc,
+        narrative: buildNarrative(lockedLoc, hit.value.bundle.current, hit.value.bundle.daily.slice(0, days)),
         daily: hit.value.bundle.daily.slice(0, days),
         from_database: true,
         is_stale: hit.isStale,
@@ -1340,7 +1742,7 @@ window.WeatherAPI = (() => {
       };
       const clonedComp = {
         ...hit.value.comparison,
-        location: { ...hit.value.comparison.location, ...loc },
+        location: lockedLoc,
         from_database: true,
         refreshing_in_background: hit.isStale,
       };
@@ -1571,24 +1973,45 @@ window.WeatherAPI = (() => {
       }
     }
 
-    // 3. Extraer ciudad o usar referencia geolocalizada
+    // 3. Extraer ciudad o usar referencia geolocalizada (SIN adivinar cuando hay ambigüedad ni caer a Buenos Aires)
     if (!loc) {
-      const cityExtract = q
-        .replace(/^[¿?¡!]+|[¿?¡!]+$/g, "")
-        .replace(
-          /\b(como esta el clima|clima actual|clima en|tiempo en|pronostico en|pronostico para|cuanto llovio en|historial del mes pasado en|historial en|el mes pasado|este ano|ayer|hoy|ahora)\b/gi,
-          " "
-        )
-        .replace(/\s+/g, " ")
-        .trim();
+      const isGenericCurrentQuery = /^(como esta el clima|clima|clima hoy|clima ahora|tiempo hoy|tiempo ahora|pronostico|pronostico hoy)\??$/i.test(low);
+      const cityExtract = isGenericCurrentQuery
+        ? ""
+        : q
+            .replace(/^[¿?¡!]+|[¿?¡!]+$/g, "")
+            .replace(
+              /\b(como esta el clima en|como esta el clima|clima actual en|clima en|tiempo en|pronostico en|pronostico para|cuanto llovio en|historial del mes pasado en|historial en|el mes pasado|este ano|ayer|hoy|ahora)\b/gi,
+              " "
+            )
+            .replace(/\s+/g, " ")
+            .trim();
 
       if (cityExtract && cityExtract.length >= 2) {
-        loc = await resolveLocationParams({ city: cityExtract });
+        const geo = await staticGeocode(cityExtract, 8);
+        const items = geo.results || [];
+        if (!items.length) {
+          return {
+            mode: "not_found",
+            query: cityExtract,
+            message: `No se encontró ninguna localidad o ciudad que coincida con "${cityExtract}". Verificá la escritura o agregá provincia y país.`,
+          };
+        }
+        const exactAuto = shouldAutoSelectGeoResult(cityExtract, items);
+        if (!exactAuto) {
+          return {
+            mode: "disambiguate",
+            query: cityExtract,
+            candidates: items,
+          };
+        }
+        loc = exactAuto;
       } else if (body.lat !== undefined && body.lon !== undefined) {
         loc = await resolveLocationParams({
           lat: body.lat,
           lon: body.lon,
           name: body.name,
+          admin2: body.admin2,
           admin1: body.admin1,
           country: body.country,
           location_source: body.location_source || "ip",
@@ -1786,6 +2209,8 @@ window.WeatherAPI = (() => {
 
   return {
     isStaticMode: () => useStaticEngine,
+    validateLocation,
+    shouldAutoSelectGeoResult,
     escapeHtml,
     convertTemp,
     fmtTemp,
@@ -1807,7 +2232,8 @@ window.WeatherAPI = (() => {
 
     geolocateIp: () => callWithFallback("/geolocate", {}, () => staticGeolocateIp()),
 
-    geocode: (q, count = 7) => callWithFallback(`/geocode${qs({ q, count })}`, {}, () => staticGeocode(q, count)),
+    geocode: (q, count = 8, signal = null) =>
+      callWithFallback(`/geocode${qs({ q, count })}`, signal ? { signal } : {}, () => staticGeocode(q, count, signal)),
 
     reverseGeocode: (lat, lon, sourceTag = "gps") =>
       callWithFallback(`/reverse-geocode${qs({ lat, lon })}`, {}, () => staticReverseGeocode(lat, lon, sourceTag)),

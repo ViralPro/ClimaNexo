@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Optional
 
 import httpx
 
 from app.config import DEFAULT_CITIES, settings
 from app.models.schemas import LocationModel
+from app.providers.base import get_ssl_context
 from app.services.cache_service import CacheService
+
+
+def _norm_geo(text: str) -> str:
+    nfd = unicodedata.normalize("NFD", (text or "").strip().lower())
+    return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
 
 
 class GeocodingService:
     OPEN_METEO_GEO = "https://geocoding-api.open-meteo.com/v1/search"
+    PHOTON_GEO = "https://photon.komoot.io/api/"
     NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 
     def __init__(self, cache: CacheService | None = None) -> None:
@@ -22,45 +30,122 @@ class GeocodingService:
         q = query.strip()
         if len(q) < 2:
             return []
-        cache_key = self.cache.build_key("geocode", q=q.lower(), count=count)
+        cache_key = self.cache.build_key("geocode_v2", q=_norm_geo(q), count=count)
         cached = self.cache.get(cache_key)
         if cached is not None:
             return [LocationModel(**item) for item in cached]
 
-        results: list[LocationModel] = []
-        try:
-            async with httpx.AsyncClient(
-                timeout=settings.http_timeout_seconds,
-                headers={"User-Agent": settings.user_agent},
-            ) as client:
+        parts = [p.strip() for p in q.split(",") if p.strip()]
+        primary_q = parts[0] if parts else q
+        qualifiers = [_norm_geo(p) for p in parts[1:]]
+
+        candidates: list[LocationModel] = []
+        async with httpx.AsyncClient(
+            timeout=settings.http_timeout_seconds,
+            headers={"User-Agent": settings.user_agent},
+            verify=get_ssl_context(),
+        ) as client:
+            # 1. Open-Meteo Geocoding
+            try:
                 resp = await client.get(
                     self.OPEN_METEO_GEO,
-                    params={"name": q, "count": count, "language": "es", "format": "json"},
+                    params={"name": primary_q, "count": 15, "language": "es", "format": "json"},
                 )
-                resp.raise_for_status()
-                data = resp.json()
-            for item in data.get("results") or []:
-                loc = LocationModel(
-                    name=str(item.get("name") or q),
-                    admin1=str(item.get("admin1") or ""),
-                    country=str(item.get("country") or ""),
-                    country_code=str(item.get("country_code") or ""),
-                    latitude=round(float(item["latitude"]), 4),
-                    longitude=round(float(item["longitude"]), 4),
-                    timezone=str(item.get("timezone") or "auto"),
-                    elevation=float(item["elevation"]) if item.get("elevation") is not None else None,
-                )
-                loc.display_label = loc.formatted_label()
-                results.append(loc)
-        except Exception:
-            # Fallback a ciudades conocidas si falla temporalmente la red
-            ql = q.lower()
-            for c in DEFAULT_CITIES:
-                if ql in c["name"].lower() or ql in c["country"].lower():
-                    loc = LocationModel(**c)
-                    loc.display_label = loc.formatted_label()
-                    results.append(loc)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("results") or []:
+                        loc = LocationModel(
+                            name=str(item.get("name") or primary_q),
+                            admin1=str(item.get("admin1") or ""),
+                            country=str(item.get("country") or ""),
+                            country_code=str(item.get("country_code") or ""),
+                            latitude=round(float(item["latitude"]), 4),
+                            longitude=round(float(item["longitude"]), 4),
+                            timezone=str(item.get("timezone") or "auto"),
+                            elevation=float(item["elevation"]) if item.get("elevation") is not None else None,
+                        )
+                        loc.display_label = loc.formatted_label()
+                        candidates.append(loc)
+            except Exception:
+                pass
 
+            # 2. Photon Komoot (soporta búsquedas multi-palabra "Localidad Provincia País" y localidades pequeñas)
+            try:
+                presp = await client.get(
+                    self.PHOTON_GEO,
+                    params=[
+                        ("q", q),
+                        ("limit", "10"),
+                        ("layer", "city"),
+                        ("layer", "district"),
+                        ("layer", "locality"),
+                        ("layer", "county"),
+                        ("layer", "state"),
+                        ("layer", "country"),
+                    ],
+                )
+                if presp.status_code == 200:
+                    pdata = presp.json()
+                    for feat in pdata.get("features") or []:
+                        props = feat.get("properties") or {}
+                        coords = (feat.get("geometry") or {}).get("coordinates") or []
+                        if len(coords) < 2:
+                            continue
+                        name = str(props.get("name") or props.get("city") or "").strip()
+                        if not name:
+                            continue
+                        loc = LocationModel(
+                            name=name,
+                            admin1=str(props.get("state") or props.get("county") or ""),
+                            country=str(props.get("country") or ""),
+                            country_code=str(props.get("countrycode") or "").upper(),
+                            latitude=round(float(coords[1]), 4),
+                            longitude=round(float(coords[0]), 4),
+                            timezone="auto",
+                        )
+                        loc.display_label = loc.formatted_label()
+                        candidates.append(loc)
+            except Exception:
+                pass
+
+        # Filtrar por calificadores explícitos (provincia / país), puntuar relevancia y deduplicar geográficamente
+        primary_norm = _norm_geo(primary_q)
+        scored_pairs: list[tuple[int, LocationModel]] = []
+        for c in candidates:
+            name_norm = _norm_geo(c.name)
+            region_hay = _norm_geo(f"{c.admin1} {c.country} {c.country_code}")
+            if qualifiers and not all(qf in region_hay for qf in qualifiers):
+                continue
+
+            if name_norm == primary_norm:
+                rank_score = 1500
+            elif name_norm.startswith(primary_norm + " ") or name_norm.startswith(primary_norm):
+                rank_score = 900
+            elif primary_norm.startswith(name_norm + " ") and len(name_norm) >= 3:
+                rank_score = 1200
+            elif all(tok in _norm_geo(f"{c.name} {c.admin1} {c.country}") for tok in primary_norm.split() if len(tok) >= 2):
+                rank_score = 650
+            else:
+                continue
+
+            if qualifiers:
+                rank_score += len(qualifiers) * 300
+            scored_pairs.append((rank_score, c))
+
+        scored_pairs.sort(key=lambda pair: pair[0], reverse=True)
+        filtered: list[LocationModel] = []
+        for _, c in scored_pairs:
+            is_dup = any(
+                _norm_geo(ex.name) == _norm_geo(c.name)
+                and _norm_geo(ex.country) == _norm_geo(c.country)
+                and abs(ex.latitude - c.latitude) < 0.09
+                and abs(ex.longitude - c.longitude) < 0.09
+                for ex in filtered
+            )
+            if not is_dup:
+                filtered.append(c)
+
+        results = filtered[:count]
         if results:
             self.cache.set(
                 cache_key, "geocode", [r.model_dump() for r in results], settings.ttl_geocoding

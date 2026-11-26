@@ -53,6 +53,26 @@ def test_health_and_geocoding_live(client: TestClient):
     assert len(results) >= 1
     assert any("Madrid" in r["name"] for r in results)
 
+    # Precisión geográfica: desambiguación con provincia y país + sin fallback silencioso en inexistentes
+    rg_sf = client.get("/api/v1/geocode", params={"q": "San Francisco, Córdoba, Argentina"})
+    assert rg_sf.status_code == 200
+    sf_res = rg_sf.json()["results"]
+    assert len(sf_res) >= 1
+    assert sf_res[0]["name"] == "San Francisco"
+    assert sf_res[0]["country_code"] == "AR"
+    assert abs(sf_res[0]["latitude"] - (-31.425)) < 0.2
+
+    rg_cor_es = client.get("/api/v1/geocode", params={"q": "Córdoba, España"})
+    assert rg_cor_es.status_code == 200
+    cor_es = rg_cor_es.json()["results"]
+    assert len(cor_es) >= 1
+    assert cor_es[0]["name"] == "Córdoba"
+    assert cor_es[0]["country_code"] == "ES"
+
+    rg_none = client.get("/api/v1/geocode", params={"q": "XyzCiudadInexistente9999"})
+    assert rg_none.status_code == 200
+    assert rg_none.json()["results"] == []
+
     rip = client.get("/api/v1/geolocate")
     assert rip.status_code == 200
     assert rip.json()["location"]["latitude"] is not None

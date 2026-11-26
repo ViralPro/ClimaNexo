@@ -21,6 +21,12 @@
     accuracyData: null,
     radarMeta: null,
     refreshTimer: null,
+    weatherLoadSeq: 0,
+    tabSearchSeq: 0,
+    tabSearchAbort: null,
+    tabSearchTimer: null,
+    tabResultsList: [],
+    tabActiveIdx: -1,
     lastCompactState: window.innerWidth < 560,
   };
 
@@ -140,8 +146,31 @@
     });
   }
 
-  /* ── Carga rápida orientada a caché multinivel ───────────────────────── */
+  /* ── Carga rápida validada con bloqueo de ubicación y control de secuencia ─ */
   async function loadCityByCoords(lat, lon, meta = {}, days = 7, forceOverview = false) {
+    const numLat = Number(lat);
+    const numLon = Number(lon);
+    if (!Number.isFinite(numLat) || !Number.isFinite(numLon) || numLat < -90 || numLat > 90 || numLon < -180 || numLon > 180) {
+      toast("Coordenadas inválidas para la ubicación seleccionada.", true);
+      return;
+    }
+
+    const reqSeq = ++state.weatherLoadSeq;
+    const lockedMeta = {
+      id: meta.id,
+      uid: meta.uid,
+      name: meta.name || "",
+      admin2: meta.admin2 || "",
+      admin1: meta.admin1 || "",
+      country: meta.country || "",
+      country_code: meta.country_code || "",
+      place_type: meta.place_type || "",
+      display_label: meta.display_label || "",
+      location_source: meta.location_source || "search",
+      latitude: Number(numLat.toFixed(4)),
+      longitude: Number(numLon.toFixed(4)),
+    };
+
     switchView("dashboard");
     const shouldGoOverview = forceOverview || state.activeTab === "search";
     if (shouldGoOverview && state.activeTab !== "overview") {
@@ -157,21 +186,43 @@
       });
     }
 
-    setLoading(true, `Consultando clima${meta.name ? ` para ${meta.name}` : ""}...`);
+    setLoading(true, `Consultando clima${lockedMeta.name ? ` para ${lockedMeta.name}` : ""}...`);
     try {
       const bundle = await API.getWeather({
-        lat,
-        lon,
-        name: meta.name,
-        country: meta.country,
-        admin1: meta.admin1,
-        location_source: meta.location_source,
+        lat: lockedMeta.latitude,
+        lon: lockedMeta.longitude,
+        name: lockedMeta.name,
+        admin2: lockedMeta.admin2,
+        admin1: lockedMeta.admin1,
+        country: lockedMeta.country,
+        country_code: lockedMeta.country_code,
+        place_type: lockedMeta.place_type,
+        location_source: lockedMeta.location_source,
         days,
       });
-      if (meta.location_source && bundle.location && !bundle.location.location_source) {
-        bundle.location.location_source = meta.location_source;
-      }
-      state.location = bundle.location;
+
+      // Descartar respuestas antiguas que lleguen después de una búsqueda más reciente
+      if (reqSeq !== state.weatherLoadSeq) return;
+
+      // Bloquear identidad geográfica exacta seleccionada (sin mutaciones externas)
+      const finalLoc = {
+        ...bundle.location,
+        ...(lockedMeta.name ? {
+          name: lockedMeta.name,
+          admin2: lockedMeta.admin2 || bundle.location.admin2 || "",
+          admin1: lockedMeta.admin1 || bundle.location.admin1 || "",
+          country: lockedMeta.country || bundle.location.country || "",
+          country_code: lockedMeta.country_code || bundle.location.country_code || "",
+          place_type: lockedMeta.place_type || bundle.location.place_type || "",
+          display_label: lockedMeta.display_label || bundle.location.display_label || lockedMeta.name,
+        } : {}),
+        latitude: lockedMeta.latitude,
+        longitude: lockedMeta.longitude,
+        location_source: lockedMeta.location_source || bundle.location.location_source,
+      };
+      bundle.location = finalLoc;
+
+      state.location = finalLoc;
       state.bundle = bundle;
       state.overviewMode = "single_forecast";
       state.extendedDays = Math.max(days, 7);
@@ -179,10 +230,11 @@
       updateActiveCityLabels();
       updateSearchActiveCard();
       loadRadarIfNeeded().then(() => {
+        if (reqSeq !== state.weatherLoadSeq) return;
         MapCtrl.initMiniMap(
-          bundle.location.latitude,
-          bundle.location.longitude,
-          bundle.location.display_label || bundle.location.name
+          finalLoc.latitude,
+          finalLoc.longitude,
+          finalLoc.display_label || finalLoc.name
         );
       });
       if (state.activeTab !== "overview") {
@@ -194,21 +246,34 @@
         setTimeout(() => silentSyncActiveCity(), 6000);
       }
     } catch (err) {
-      toast(`Error cargando el clima: ${err.message}`, true);
+      if (reqSeq === state.weatherLoadSeq) {
+        toast(`Error cargando el clima: ${err.message}`, true);
+      }
     } finally {
-      setLoading(false);
+      if (reqSeq === state.weatherLoadSeq) {
+        setLoading(false);
+      }
     }
   }
 
   async function silentSyncActiveCity() {
     if (state.view !== "dashboard" || !state.location || state.overviewMode !== "single_forecast") return;
+    const syncSeq = state.weatherLoadSeq;
+    const lockedLoc = { ...state.location };
     try {
       const bundle = await API.getWeather({
-        lat: state.location.latitude,
-        lon: state.location.longitude,
+        lat: lockedLoc.latitude,
+        lon: lockedLoc.longitude,
+        name: lockedLoc.name,
+        admin2: lockedLoc.admin2,
+        admin1: lockedLoc.admin1,
+        country: lockedLoc.country,
+        location_source: lockedLoc.location_source,
         days: state.extendedDays,
       });
+      if (syncSeq !== state.weatherLoadSeq) return;
       if (!bundle.is_stale) {
+        bundle.location = { ...bundle.location, ...lockedLoc };
         state.bundle = bundle;
         state.location = bundle.location;
         if (state.activeTab === "overview") renderOverviewForecast(bundle);
@@ -220,16 +285,126 @@
     }
   }
 
-  async function submitNaturalQuery(queryText) {
+  function formatLocationRegion(loc) {
+    const parts = [];
+    if (loc.admin2 && loc.admin2.toLowerCase() !== String(loc.name || "").toLowerCase() && loc.admin2.toLowerCase() !== String(loc.admin1 || "").toLowerCase()) {
+      parts.push(loc.admin2);
+    }
+    if (loc.admin1 && loc.admin1.toLowerCase() !== String(loc.name || "").toLowerCase()) {
+      parts.push(loc.admin1);
+    }
+    if (loc.country && loc.country.toLowerCase() !== String(loc.name || "").toLowerCase()) {
+      parts.push(loc.country);
+    }
+    return parts.join(", ");
+  }
+
+  function renderLandingMenuMessage(menu, title, items = [], onPick = null) {
+    if (!menu) return;
+    if (!items.length) {
+      menu.innerHTML = `<div class="autocomplete-empty"><strong>${API.escapeHtml(title)}</strong><span>Verificá la escritura o agregá provincia y país (ej: <em>San Francisco, Córdoba, Argentina</em>).</span></div>`;
+      menu.classList.remove("hidden");
+      return;
+    }
+    const byUid = new Map();
+    menu.innerHTML =
+      `<div class="autocomplete-header">${API.escapeHtml(title)}</div>` +
+      items
+        .map((c, idx) => {
+          const uid = c.uid || `${c.latitude}:${c.longitude}:${idx}`;
+          byUid.set(uid, c);
+          const reg = formatLocationRegion(c) || "Ubicación geográfica";
+          const typeTag = c.place_type ? `<span class="geo-type-tag">${API.escapeHtml(c.place_type)}</span>` : "";
+          const fuzzyTag = c.is_fuzzy_match ? `<span class="geo-fuzzy-tag">Aproximada</span>` : "";
+          return `
+          <button type="button" class="autocomplete-item" role="option" aria-selected="false" data-uid="${API.escapeHtml(uid)}">
+            <span class="autocomplete-main">
+              <span class="autocomplete-name-row"><strong>${API.escapeHtml(c.name)}</strong>${typeTag}${fuzzyTag}</span>
+              <span class="autocomplete-sub">${API.escapeHtml(reg)}</span>
+            </span>
+            <span class="autocomplete-coords tabular">${Number(c.latitude).toFixed(2)}°, ${Number(c.longitude).toFixed(2)}°</span>
+          </button>`;
+        })
+        .join("");
+    menu.classList.remove("hidden");
+    menu.querySelectorAll(".autocomplete-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const chosen = byUid.get(btn.dataset.uid);
+        if (!chosen) return;
+        menu.classList.add("hidden");
+        if (onPick) onPick(chosen);
+      });
+    });
+  }
+
+  async function submitNaturalQuery(queryText, sourceContext = "landing") {
     const q = (queryText || "").trim();
     if (!q) {
       // Si el usuario envía vacío, mostrar automáticamente el clima de su ubicación detectada
       const detected = state.location || state.detectedLocation || (await detectLocationInBackground());
       if (detected) {
-        await loadCityByCoords(detected.latitude, detected.longitude, detected, 7);
+        await loadCityByCoords(detected.latitude, detected.longitude, detected, 7, true);
       }
       return;
     }
+
+    const isComplexQuery =
+      /^-?\d{1,2}(\.\d+)?\s*[,;\s]\s*-?\d{1,3}(\.\d+)?$/.test(q) ||
+      /\b(comparar|vs\.?|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q);
+    const isGenericCurrent = /^(¿?\s*c[oó]mo est[aá] el clima|clima hoy|clima ahora|tiempo hoy|tiempo ahora|pron[oó]stico hoy)\s*\??$/i.test(q);
+
+    // Para búsquedas de ubicación: verificar y desambiguar ANTES de abandonar la pantalla actual (NUNCA adivinar)
+    if (!isComplexQuery && !isGenericCurrent) {
+      const reqSeq = ++state.weatherLoadSeq;
+      const landingMenu = document.getElementById("landing-autocomplete");
+      const landingInput = document.getElementById("landing-input");
+      try {
+        const res = await API.geocode(q, 8);
+        if (reqSeq !== state.weatherLoadSeq) return;
+        const items = res.results || [];
+        if (!items.length) {
+          if (sourceContext === "landing" && landingMenu) {
+            renderLandingMenuMessage(landingMenu, `No se encontraron ubicaciones para "${q}"`, []);
+          } else {
+            toast(`No se encontró ninguna ubicación para "${q}". Agregá provincia o país.`, true);
+          }
+          return;
+        }
+        const autoChoice = API.shouldAutoSelectGeoResult(q, items);
+        if (autoChoice) {
+          if (landingMenu) landingMenu.classList.add("hidden");
+          await loadCityByCoords(autoChoice.latitude, autoChoice.longitude, { ...autoChoice, location_source: "search" }, 7, true);
+          return;
+        }
+        // Múltiples coincidencias o typo difuso -> pedir confirmación exacta al usuario
+        if (sourceContext === "landing" && landingMenu) {
+          renderLandingMenuMessage(
+            landingMenu,
+            `${items.length} ubicaciones coinciden con "${q}". Elegí la exacta:`,
+            items,
+            (chosen) => {
+              if (landingInput) landingInput.value = chosen.display_label || chosen.name;
+              loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
+            }
+          );
+          return;
+        }
+        // Si venimos del panel activo, mostrar resultados en Buscar sin adivinar
+        switchView("dashboard");
+        await switchTab("search");
+        const sInp = document.getElementById("search-tab-input");
+        if (sInp) sInp.value = q;
+        renderSearchTabResults(items, q);
+        return;
+      } catch (err) {
+        if (reqSeq === state.weatherLoadSeq) {
+          toast(`Error buscando ubicación: ${err.message}`, true);
+        }
+        return;
+      }
+    }
+
+    const reqSeq = ++state.weatherLoadSeq;
     switchView("dashboard");
     switchTab("overview");
     setLoading(true, "Procesando consulta meteorológica...");
@@ -240,13 +415,23 @@
         lat: refLoc ? refLoc.latitude : undefined,
         lon: refLoc ? refLoc.longitude : undefined,
         name: refLoc ? refLoc.name : undefined,
+        admin2: refLoc ? refLoc.admin2 : undefined,
         admin1: refLoc ? refLoc.admin1 : undefined,
         country: refLoc ? refLoc.country : undefined,
         location_source: refLoc ? refLoc.location_source : undefined,
       });
 
-      const sTabInp = document.getElementById("search-tab-input");
-      if (sTabInp) sTabInp.value = q;
+      if (reqSeq !== state.weatherLoadSeq) return;
+
+      if (res.mode === "not_found") {
+        toast(res.message || `No se encontró "${q}".`, true);
+        return;
+      }
+      if (res.mode === "disambiguate" && Array.isArray(res.candidates)) {
+        await switchTab("search");
+        renderSearchTabResults(res.candidates, res.query || q);
+        return;
+      }
 
       if (res.mode === "multi_city" && res.multi_city) {
         state.overviewMode = "multi_city";
@@ -265,6 +450,7 @@
         updateSearchActiveCard();
         renderOverviewHistory(res.history, res.theme, res.date_focus_label);
         loadRadarIfNeeded().then(() => {
+          if (reqSeq !== state.weatherLoadSeq) return;
           MapCtrl.initMiniMap(
             res.history.location.latitude,
             res.history.location.longitude,
@@ -279,6 +465,7 @@
         updateSearchActiveCard();
         renderOverviewForecast(res.weather);
         loadRadarIfNeeded().then(() => {
+          if (reqSeq !== state.weatherLoadSeq) return;
           MapCtrl.initMiniMap(
             res.weather.location.latitude,
             res.weather.location.longitude,
@@ -290,9 +477,13 @@
         }
       }
     } catch (err) {
-      toast(`No se pudo completar la consulta: ${err.message}`, true);
+      if (reqSeq === state.weatherLoadSeq) {
+        toast(`No se pudo completar la consulta: ${err.message}`, true);
+      }
     } finally {
-      setLoading(false);
+      if (reqSeq === state.weatherLoadSeq) {
+        setLoading(false);
+      }
     }
   }
 
@@ -489,7 +680,7 @@
 
     const cur = b.current;
     document.getElementById("hero-city-name").textContent = b.location.name;
-    const regionText = [b.location.admin1, b.location.country].filter(Boolean).join(", ");
+    const regionText = formatLocationRegion(b.location);
     const coordsText = `${Number(b.location.latitude).toFixed(2)}°, ${Number(b.location.longitude).toFixed(2)}°`;
     document.getElementById("hero-city-sub").textContent = regionText ? `${regionText} · ${coordsText}` : coordsText;
 
@@ -1287,7 +1478,7 @@
       .join("");
   }
 
-  /* ── TAB 8: BUSCAR UBICACIONES ───────────────────────────────────────── */
+  /* ── TAB 8: BUSCAR UBICACIONES (PRECISIÓN GEOGRÁFICA + ANTI RACE CONDITION) ─ */
   function updateSearchActiveCard() {
     const card = document.getElementById("search-active-card");
     const nameEl = document.getElementById("search-active-name");
@@ -1295,9 +1486,9 @@
     if (!card || !nameEl || !metaEl) return;
     if (state.location) {
       nameEl.textContent = state.location.name;
-      metaEl.textContent =
-        [state.location.admin1, state.location.country].filter(Boolean).join(", ") ||
-        `${state.location.latitude.toFixed(2)}, ${state.location.longitude.toFixed(2)}`;
+      const reg = formatLocationRegion(state.location);
+      const coords = `${Number(state.location.latitude).toFixed(2)}°, ${Number(state.location.longitude).toFixed(2)}°`;
+      metaEl.textContent = reg ? `${reg} · ${coords}` : coords;
       card.classList.remove("hidden");
     } else {
       card.classList.add("hidden");
@@ -1307,110 +1498,168 @@
   function initSearchTab() {
     updateSearchActiveCard();
     const input = document.getElementById("search-tab-input");
+    const clr = document.getElementById("search-tab-clear");
     if (input) {
-      if (state.location && !input.value) {
-        input.value = state.location.name;
+      if (clr) clr.classList.toggle("hidden", !input.value.trim());
+      if (window.innerWidth >= 768) {
+        setTimeout(() => {
+          input.focus({ preventScroll: true });
+        }, 80);
       }
-      setTimeout(() => {
-        input.focus();
-        input.select();
-      }, 100);
     }
   }
 
-  function renderSearchTabResults(results) {
+  function highlightTabResult(idx) {
+    const list = document.getElementById("search-tab-results");
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll(".search-result-row"));
+    if (!rows.length) {
+      state.tabActiveIdx = -1;
+      return;
+    }
+    const bounded = ((idx % rows.length) + rows.length) % rows.length;
+    state.tabActiveIdx = bounded;
+    rows.forEach((r, i) => {
+      const isAct = i === bounded;
+      r.classList.toggle("is-highlighted", isAct);
+      r.setAttribute("aria-selected", isAct ? "true" : "false");
+      if (isAct) r.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function renderSearchTabResults(results, queryLabel = "") {
     const list = document.getElementById("search-tab-results");
     const status = document.getElementById("search-tab-status");
     if (!list) return;
 
-    if (!results || !results.length) {
+    state.tabResultsList = Array.isArray(results) ? results : [];
+    state.tabActiveIdx = -1;
+
+    if (!state.tabResultsList.length) {
+      list.innerHTML = "";
       list.classList.add("hidden");
       if (status) {
-        status.textContent = "No se encontraron ubicaciones coincidentes.";
+        status.textContent = queryLabel
+          ? `No se encontraron ubicaciones reales que coincidan con "${queryLabel}". Verificá la escritura o agregá provincia y país.`
+          : "No se encontraron ubicaciones coincidentes.";
         status.classList.remove("hidden");
       }
       return;
     }
 
     if (status) {
-      status.textContent = `${results.length} ubicaciones encontradas. Seleccioná una para consultar su clima:`;
+      status.textContent =
+        state.tabResultsList.length === 1
+          ? `1 ubicación encontrada para "${queryLabel}". Seleccionála para consultar el clima:`
+          : `${state.tabResultsList.length} ubicaciones coinciden con "${queryLabel}". Elegí la localidad exacta:`;
       status.classList.remove("hidden");
     }
 
-    list.innerHTML = results
-      .map(
-        (loc, idx) => `
-      <button type="button" class="search-result-row" data-idx="${idx}">
+    const byUid = new Map();
+    list.innerHTML = state.tabResultsList
+      .map((loc, idx) => {
+        const uid = loc.uid || `${loc.latitude}:${loc.longitude}:${idx}`;
+        byUid.set(uid, loc);
+        const region = formatLocationRegion(loc) || "Ubicación geográfica";
+        const typeTag = loc.place_type ? `<span class="geo-type-tag">${API.escapeHtml(loc.place_type)}</span>` : "";
+        const fuzzyTag = loc.is_fuzzy_match ? `<span class="geo-fuzzy-tag">Aproximada</span>` : "";
+        return `
+      <button type="button" class="search-result-row" role="option" aria-selected="false" data-uid="${API.escapeHtml(uid)}">
         <div class="search-result-left">
           <span class="search-result-pin"><i data-lucide="map-pin"></i></span>
           <div class="search-result-title">
-            <strong>${API.escapeHtml(loc.name)}</strong>
-            <span class="search-result-meta">${API.escapeHtml([loc.admin1, loc.country].filter(Boolean).join(", ") || "Ubicación geográfica")} · <span class="tabular">${loc.latitude.toFixed(2)}, ${loc.longitude.toFixed(2)}</span></span>
+            <span class="search-result-name-line"><strong>${API.escapeHtml(loc.name)}</strong>${typeTag}${fuzzyTag}</span>
+            <span class="search-result-meta">${API.escapeHtml(region)} · <span class="tabular">${Number(loc.latitude).toFixed(2)}°, ${Number(loc.longitude).toFixed(2)}°</span></span>
           </div>
         </div>
         <span class="search-result-action">Ver clima <i data-lucide="arrow-right"></i></span>
-      </button>`
-      )
+      </button>`;
+      })
       .join("");
     list.classList.remove("hidden");
     refreshIcons();
 
     list.querySelectorAll(".search-result-row").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const chosen = results[Number(btn.dataset.idx)];
+        const chosen = byUid.get(btn.dataset.uid);
+        if (!chosen || !API.validateLocation(chosen)) return;
         list.classList.add("hidden");
         if (status) status.classList.add("hidden");
         const sTabInp = document.getElementById("search-tab-input");
-        if (sTabInp) sTabInp.value = chosen.name;
+        if (sTabInp) sTabInp.value = chosen.display_label || chosen.name;
         loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
       });
     });
   }
 
-  async function executeTabSearch(rawQuery) {
+  async function executeTabSearch(rawQuery, isLivePreview = false) {
     const q = (rawQuery || "").trim();
     const status = document.getElementById("search-tab-status");
     const list = document.getElementById("search-tab-results");
-    if (!q) {
+
+    // Cancelar solicitud anterior en vuelo para impedir que respuestas viejas sobrescriban resultados nuevos
+    if (state.tabSearchAbort) {
+      state.tabSearchAbort.abort();
+      state.tabSearchAbort = null;
+    }
+
+    if (!q || (isLivePreview && q.length < 2)) {
+      state.tabResultsList = [];
+      state.tabActiveIdx = -1;
       if (status) status.classList.add("hidden");
-      if (list) list.classList.add("hidden");
+      if (list) {
+        list.innerHTML = "";
+        list.classList.add("hidden");
+      }
       return;
     }
 
-    // Si es una consulta compleja (comparativa explícita, historial o coordenadas directas), resolverla directamente
-    if (
+    // Si es una consulta compleja (comparativa explícita, historial o coordenadas directas)
+    const isComplex =
       /^-?\d{1,2}(\.\d+)?\s*[,;\s]\s*-?\d{1,3}(\.\d+)?$/.test(q) ||
-      /\b(comparar|vs\.?|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q)
-    ) {
+      /\b(comparar|vs\.?|cu[aá]nto|mes pasado|este a[nñ]o|ayer|historial)\b/i.test(q);
+    if (isComplex) {
+      if (isLivePreview) return;
       if (status) {
         status.textContent = "Procesando consulta meteorológica...";
         status.classList.remove("hidden");
       }
       if (list) list.classList.add("hidden");
-      await submitNaturalQuery(q);
+      await submitNaturalQuery(q, "search");
       return;
     }
 
-    // Búsqueda de ubicación: geocodificar sin descargar pronósticos especulativos innecesarios
-    if (status) {
+    const reqSeq = ++state.tabSearchSeq;
+    const abortCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    state.tabSearchAbort = abortCtrl;
+
+    if (status && !isLivePreview) {
       status.textContent = `Buscando "${q}"...`;
       status.classList.remove("hidden");
     }
+
     try {
-      const res = await API.geocode(q, 7);
+      const res = await API.geocode(q, 8, abortCtrl ? abortCtrl.signal : null);
+      // Ignorar si llegó una búsqueda posterior mientras esta estaba en vuelo
+      if (reqSeq !== state.tabSearchSeq) return;
       const items = res.results || [];
       if (!items.length) {
-        await submitNaturalQuery(q);
+        renderSearchTabResults([], q);
         return;
       }
-      if (items.length === 1) {
-        if (list) list.classList.add("hidden");
-        if (status) status.classList.add("hidden");
-        await loadCityByCoords(items[0].latitude, items[0].longitude, { ...items[0], location_source: "search" }, 7, true);
-        return;
+      if (!isLivePreview) {
+        const autoChoice = API.shouldAutoSelectGeoResult(q, items);
+        if (autoChoice) {
+          if (list) list.classList.add("hidden");
+          if (status) status.classList.add("hidden");
+          await loadCityByCoords(autoChoice.latitude, autoChoice.longitude, { ...autoChoice, location_source: "search" }, 7, true);
+          return;
+        }
       }
-      renderSearchTabResults(items);
+      renderSearchTabResults(items, q);
     } catch (err) {
+      if (err && err.name === "AbortError") return;
+      if (reqSeq !== state.tabSearchSeq) return;
       if (status) {
         status.textContent = `Error buscando ubicación: ${err.message}`;
         status.classList.remove("hidden");
@@ -1418,55 +1667,102 @@
     }
   }
 
-  /* ── Autocomplete de ciudades ────────────────────────────────────────── */
+  /* ── Autocomplete preciso con AbortController, secuencia y teclado ──── */
   function attachAutocomplete(inputId, menuId) {
     const input = document.getElementById(inputId);
     const menu = document.getElementById(menuId);
     if (!input || !menu) return;
     let timer = null;
+    let reqSeq = 0;
+    let activeAbort = null;
+    let currentItems = [];
+    let activeIdx = -1;
+
+    function closeMenu() {
+      menu.classList.add("hidden");
+      currentItems = [];
+      activeIdx = -1;
+    }
+
+    function selectCandidate(chosen) {
+      if (!chosen || !API.validateLocation(chosen)) return;
+      closeMenu();
+      input.value = chosen.display_label || chosen.name;
+      loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
+    }
+
+    function updateHighlight(nextIdx) {
+      const buttons = Array.from(menu.querySelectorAll(".autocomplete-item"));
+      if (!buttons.length) {
+        activeIdx = -1;
+        return;
+      }
+      activeIdx = ((nextIdx % buttons.length) + buttons.length) % buttons.length;
+      buttons.forEach((b, i) => {
+        const isAct = i === activeIdx;
+        b.classList.toggle("is-highlighted", isAct);
+        b.setAttribute("aria-selected", isAct ? "true" : "false");
+        if (isAct) b.scrollIntoView({ block: "nearest" });
+      });
+    }
 
     input.addEventListener("input", () => {
       clearTimeout(timer);
+      if (activeAbort) {
+        activeAbort.abort();
+        activeAbort = null;
+      }
       const val = input.value.trim();
-      if (val.length < 2 || val.includes(",") || /\b(comparar|cu[aá]nto|mes pasado|este a[nñ]o)\b/i.test(val)) {
-        menu.classList.add("hidden");
+      if (val.length < 2 || /\b(comparar|vs\.?|cu[aá]nto|mes pasado|este a[nñ]o|historial)\b/i.test(val)) {
+        closeMenu();
         return;
       }
       timer = setTimeout(async () => {
+        const mySeq = ++reqSeq;
+        activeAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
         try {
-          const res = await API.geocode(val, 6);
+          const res = await API.geocode(val, 7, activeAbort ? activeAbort.signal : null);
+          if (mySeq !== reqSeq) return;
           const list = res.results || [];
+          currentItems = list;
+          activeIdx = -1;
           if (!list.length) {
-            menu.classList.add("hidden");
+            renderLandingMenuMessage(menu, `Sin coincidencias para "${val}"`, []);
             return;
           }
-          menu.innerHTML = list
-            .map(
-              (c, idx) => `
-            <button type="button" class="autocomplete-item" role="option" data-idx="${idx}">
-              <span><strong>${API.escapeHtml(c.name)}</strong> <span class="autocomplete-sub">${API.escapeHtml([c.admin1, c.country].filter(Boolean).join(", "))}</span></span>
-              <span class="autocomplete-sub tabular">${c.latitude.toFixed(2)}, ${c.longitude.toFixed(2)}</span>
-            </button>`
-            )
-            .join("");
-          menu.classList.remove("hidden");
-          menu.querySelectorAll(".autocomplete-item").forEach((btn) => {
-            btn.addEventListener("click", () => {
-              const chosen = list[Number(btn.dataset.idx)];
-              menu.classList.add("hidden");
-              input.value = chosen.display_label || chosen.name;
-              loadCityByCoords(chosen.latitude, chosen.longitude, chosen, 7);
-            });
-          });
-        } catch {
-          menu.classList.add("hidden");
+          renderLandingMenuMessage(menu, `Coincidencias para "${val}"`, list, selectCandidate);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          if (mySeq === reqSeq) closeMenu();
         }
-      }, 240);
+      }, 220);
+    });
+
+    input.addEventListener("keydown", (ev) => {
+      if (menu.classList.contains("hidden")) return;
+      const buttons = Array.from(menu.querySelectorAll(".autocomplete-item"));
+      if (!buttons.length) {
+        if (ev.key === "Escape") closeMenu();
+        return;
+      }
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        updateHighlight(activeIdx + 1);
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        updateHighlight(activeIdx <= 0 ? buttons.length - 1 : activeIdx - 1);
+      } else if (ev.key === "Enter" && activeIdx >= 0 && currentItems[activeIdx]) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        selectCandidate(currentItems[activeIdx]);
+      } else if (ev.key === "Escape") {
+        closeMenu();
+      }
     });
 
     document.addEventListener("click", (ev) => {
       if (!menu.contains(ev.target) && ev.target !== input) {
-        menu.classList.add("hidden");
+        closeMenu();
       }
     });
   }
@@ -1483,30 +1779,74 @@
     document.getElementById("landing-form").addEventListener("submit", (ev) => {
       ev.preventDefault();
       const inp = document.getElementById("landing-input");
-      submitNaturalQuery(inp.value.trim());
+      submitNaturalQuery(inp.value.trim(), "landing");
     });
 
-    // Formulario de búsqueda en apartado Buscar (navegación superior)
+    // Formulario de búsqueda en apartado Buscar (navegación superior) con live debounce + teclado
     const searchTabForm = document.getElementById("search-tab-form");
     const searchTabInp = document.getElementById("search-tab-input");
     const searchTabClr = document.getElementById("search-tab-clear");
     if (searchTabForm && searchTabInp) {
       searchTabForm.addEventListener("submit", (ev) => {
         ev.preventDefault();
-        executeTabSearch(searchTabInp.value.trim());
+        clearTimeout(state.tabSearchTimer);
+        if (state.tabActiveIdx >= 0 && state.tabResultsList[state.tabActiveIdx]) {
+          const chosen = state.tabResultsList[state.tabActiveIdx];
+          const list = document.getElementById("search-tab-results");
+          const status = document.getElementById("search-tab-status");
+          if (list) list.classList.add("hidden");
+          if (status) status.classList.add("hidden");
+          searchTabInp.value = chosen.display_label || chosen.name;
+          loadCityByCoords(chosen.latitude, chosen.longitude, { ...chosen, location_source: "search" }, 7, true);
+          return;
+        }
+        executeTabSearch(searchTabInp.value.trim(), false);
       });
       searchTabInp.addEventListener("input", () => {
+        const v = searchTabInp.value.trim();
         if (searchTabClr) {
-          searchTabClr.classList.toggle("hidden", !searchTabInp.value.trim());
+          searchTabClr.classList.toggle("hidden", !v);
+        }
+        clearTimeout(state.tabSearchTimer);
+        if (v.length < 2) {
+          executeTabSearch("", true);
+          return;
+        }
+        state.tabSearchTimer = setTimeout(() => {
+          executeTabSearch(searchTabInp.value.trim(), true);
+        }, 230);
+      });
+      searchTabInp.addEventListener("keydown", (ev) => {
+        if (!state.tabResultsList.length) return;
+        if (ev.key === "ArrowDown") {
+          ev.preventDefault();
+          highlightTabResult(state.tabActiveIdx + 1);
+        } else if (ev.key === "ArrowUp") {
+          ev.preventDefault();
+          highlightTabResult(state.tabActiveIdx <= 0 ? state.tabResultsList.length - 1 : state.tabActiveIdx - 1);
+        } else if (ev.key === "Escape") {
+          state.tabActiveIdx = -1;
+          const list = document.getElementById("search-tab-results");
+          if (list) list.classList.add("hidden");
         }
       });
       if (searchTabClr) {
         searchTabClr.addEventListener("click", () => {
+          clearTimeout(state.tabSearchTimer);
+          if (state.tabSearchAbort) {
+            state.tabSearchAbort.abort();
+            state.tabSearchAbort = null;
+          }
           searchTabInp.value = "";
           searchTabClr.classList.add("hidden");
+          state.tabResultsList = [];
+          state.tabActiveIdx = -1;
           const list = document.getElementById("search-tab-results");
           const status = document.getElementById("search-tab-status");
-          if (list) list.classList.add("hidden");
+          if (list) {
+            list.innerHTML = "";
+            list.classList.add("hidden");
+          }
           if (status) status.classList.add("hidden");
           searchTabInp.focus();
         });
